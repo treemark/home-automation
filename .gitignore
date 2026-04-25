@@ -3,3 +3,4 @@
 /philips/build/
 /mqtt/build/
 /.gradle/
+.openbeken-cache.json
