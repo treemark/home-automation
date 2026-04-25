@@ -1,11 +1,16 @@
 package com.openbeken.cli;
 
 import com.openbeken.animation.ColorRotationAnimation;
+import com.openbeken.broker.EmbeddedBroker;
 import com.openbeken.discovery.MqttDiscoveryService;
 import com.openbeken.discovery.OpenBekenDiscoveryService;
 import com.openbeken.discovery.OpenBekenDiscoveryService.InventoryDevice;
 import com.openbeken.model.OpenBekenDevice;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -22,6 +27,7 @@ public class OpenBekenCLI {
     private final OpenBekenDiscoveryService discoveryService;
     private MqttDiscoveryService mqttService;
     private ColorRotationAnimation colorRotation;
+    private EmbeddedBroker embeddedBroker;
     private String brokerUrl = DEFAULT_BROKER;
     private String subnet = DEFAULT_SUBNET;
 
@@ -122,8 +128,9 @@ public class OpenBekenCLI {
         System.out.println("\n=== Device Configuration ===");
         System.out.println("  power-on-state <device> <0-4> - Set PowerOnState (what happens on power restore)");
         System.out.println("    pos                           0=OFF, 1=ON (dumb bulb), 3=last state, 4=ON+lock");
-        System.out.println("  configure-all                 - Add led_enableAll 1 to startup on ALL devices");
-        System.out.println("    ca                            (ensures bulbs turn ON on power restore)");
+        System.out.println("  configure-all [broker-ip]     - Configure MQTT broker + led_enableAll on ALL devices");
+        System.out.println("    ca                            Sets mqtt_host to this machine's IP (auto-detected),");
+        System.out.println("                                  mqtt_port=1883, group=openbeken, + led_enableAll 1");
         System.out.println("\n=== Animations ===");
         System.out.println("  rainbow <d1> <d2> <d3> [cycles] [delay] - Color rotation across 3 bulbs");
         System.out.println("    rotate                                   (120° hue offset per bulb)");
@@ -312,8 +319,12 @@ public class OpenBekenCLI {
     }
 
     /**
-     * Ensure all discovered devices have 'led_enableAll 1' in their startup command.
-     * This makes bulbs turn ON automatically when the physical switch restores power.
+     * Configure all discovered devices:
+     *  1. Set MQTT broker host/port to point at this machine
+     *  2. Ensure led_enableAll 1 in startup command
+     *
+     * Usage: configure-all [broker-ip]
+     *   If broker-ip is omitted, auto-detects this machine's LAN IP.
      */
     private void cmdConfigureAll(String[] parts) {
         var all = new HashMap<>(discoveryService.getDiscoveredDevices());
@@ -325,29 +336,126 @@ public class OpenBekenCLI {
             System.out.println("✗ No discovered devices with IPs. Run 'scan' or 'inventory' first.");
             return;
         }
-        System.out.printf("\n→ Configuring %d device(s) with led_enableAll 1 in startup command...\n", withIps.size());
-        System.out.println("  (This ensures bulbs turn ON when physical switch restores power)\n");
-        int updated = 0, already = 0, fail = 0;
+
+        // Determine broker IP — explicit arg or auto-detect
+        String brokerIp;
+        if (parts.length > 1) {
+            brokerIp = parts[1];
+        } else {
+            brokerIp = detectLocalIp();
+        }
+        if (brokerIp == null) {
+            System.out.println("✗ Could not detect local IP. Please specify: configure-all <broker-ip>");
+            return;
+        }
+
+        int mqttPort = 1883;
+        String groupTopic = "openbeken";
+
+        System.out.printf("\n→ Configuring %d device(s)...\n", withIps.size());
+        System.out.printf("  MQTT Broker:  %s:%d\n", brokerIp, mqttPort);
+        System.out.printf("  Group Topic:  %s\n", groupTopic);
+        System.out.println("  Startup Cmd:  led_enableAll 1\n");
+
+        int mqttConfigured = 0, mqttAlready = 0, mqttFail = 0;
+        int ledUpdated = 0, ledAlready = 0, ledFail = 0;
+
         for (OpenBekenDevice d : withIps) {
-            System.out.printf("  %s (%s)... ", s(d.getDeviceId()), d.getIp());
-            String result = discoveryService.ensureLedEnableOnStartup(d.getIp());
-            switch (result) {
-                case "updated":
-                    System.out.println("✓ Updated");
-                    updated++;
+            String deviceIp = d.getIp();
+            String deviceId = s(d.getDeviceId());
+            System.out.printf("  %s (%s)\n", deviceId, deviceIp);
+
+            // 1. Configure MQTT broker
+            String clientId = "obk" + deviceIp.replace(".", "_");
+            String mqttResult = discoveryService.configureMqtt(
+                    deviceIp, brokerIp, mqttPort, clientId, groupTopic);
+            switch (mqttResult) {
+                case "configured":
+                    System.out.printf("    ✓ MQTT broker → %s:%d (configured)\n", brokerIp, mqttPort);
+                    mqttConfigured++;
                     break;
                 case "already configured":
-                    System.out.println("✓ Already configured");
-                    already++;
+                    System.out.printf("    ✓ MQTT broker → %s:%d (already set)\n", brokerIp, mqttPort);
+                    mqttAlready++;
                     break;
                 default:
-                    System.out.println("✗ FAILED (" + result + ")");
-                    fail++;
+                    System.out.printf("    ✗ MQTT config FAILED (%s)\n", mqttResult);
+                    mqttFail++;
+                    break;
+            }
+
+            // 2. Ensure led_enableAll 1 in startup command
+            String ledResult = discoveryService.ensureLedEnableOnStartup(deviceIp);
+            switch (ledResult) {
+                case "updated":
+                    System.out.println("    ✓ led_enableAll 1 — Updated");
+                    ledUpdated++;
+                    break;
+                case "already configured":
+                    System.out.println("    ✓ led_enableAll 1 — Already set");
+                    ledAlready++;
+                    break;
+                default:
+                    System.out.printf("    ✗ led_enableAll FAILED (%s)\n", ledResult);
+                    ledFail++;
                     break;
             }
         }
-        System.out.printf("\n✓ Configuration complete: %d updated, %d already OK, %d failed\n",
-                updated, already, fail);
+
+        System.out.println("\n╔═══════════════════════════════════════════════════════════╗");
+        System.out.println("║  Configuration Summary                                    ║");
+        System.out.println("╠═══════════════════════════════════════════════════════════╣");
+        System.out.printf("║  MQTT broker:     %d configured, %d already OK, %d failed  \n",
+                mqttConfigured, mqttAlready, mqttFail);
+        System.out.printf("║  led_enableAll:   %d updated, %d already OK, %d failed     \n",
+                ledUpdated, ledAlready, ledFail);
+        System.out.println("╚═══════════════════════════════════════════════════════════╝");
+
+        if (mqttConfigured > 0) {
+            System.out.println("\n⚠  Devices with new MQTT settings need a restart to connect to the broker.");
+            System.out.println("   Toggle power or use: curl http://<device-ip>/index?restart=1");
+        }
+    }
+
+    /**
+     * Auto-detect this machine's LAN IP address on the configured subnet.
+     * Iterates network interfaces looking for an address matching the subnet prefix.
+     * Falls back to InetAddress.getLocalHost() if no match found.
+     */
+    private String detectLocalIp() {
+        try {
+            // First, try to find an interface on our configured subnet
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp()) continue;
+                Enumeration<InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    String ip = addr.getHostAddress();
+                    if (ip.startsWith(subnet + ".")) {
+                        return ip;
+                    }
+                }
+            }
+            // Fallback: any non-loopback IPv4 address
+            ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp()) continue;
+                Enumeration<InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (addr instanceof java.net.Inet4Address) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+            // Last resort
+            return InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // --- Connection config commands ---
@@ -382,6 +490,7 @@ public class OpenBekenCLI {
         if (mqttService == null) { mqttService = new MqttDiscoveryService(); }
         if (!mqttService.isConnected()) {
             System.out.println("→ Connecting to MQTT broker: " + url);
+            System.out.println("  (Start broker first with: ./gradlew :mqtt:broker)");
             mqttService.connect(url);
             System.out.println("✓ Connected to MQTT broker");
         }
@@ -416,40 +525,58 @@ public class OpenBekenCLI {
     // --- Animation commands ---
 
     private void cmdRainbow(String[] parts) throws Exception {
-        if (parts.length < 4) {
-            System.out.println("Usage: rainbow <device1> <device2> <device3> [cycles] [delayMs]");
-            System.out.println("  Example: rainbow obk1 obk2 obk3");
-            System.out.println("  Example: rainbow obk1 obk2 obk3 5 30");
-            System.out.println("  cycles:  number of full 360° rotations (default: 3, 0=infinite)");
-            System.out.println("  delayMs: milliseconds between frames (default: 50)");
-            return;
+        List<String> deviceIds = new ArrayList<>();
+        int cycles = 3;
+        long delayMs = 50;
+
+        // Check if called with no device IDs or with "rotate" keyword
+        // e.g. "rainbow rotate", "rainbow", "rotate" — auto-load all discovered devices
+        boolean autoLoad = (parts.length == 1) ||
+                (parts.length == 2 && parts[1].equalsIgnoreCase("rotate"));
+
+        if (autoLoad) {
+            deviceIds = loadDiscoveredDeviceIds();
+            if (deviceIds.isEmpty()) {
+                System.out.println("✗ No discovered devices found.");
+                System.out.println("  Run 'scan', 'inventory', or 'probe <ip>' first to discover devices.");
+                System.out.println("  Or specify devices manually:");
+                System.out.println("  Usage: rainbow <device1> <device2> <device3> [cycles] [delayMs]");
+                return;
+            }
+        } else {
+            // Collect device IDs (everything that doesn't parse as a number)
+            for (int i = 1; i < parts.length; i++) {
+                try {
+                    int val = Integer.parseInt(parts[i]);
+                    // First number = cycles, second = delay
+                    if (cycles == 3 && deviceIds.size() >= 2) { cycles = val; }
+                    else if (deviceIds.size() >= 2) { delayMs = val; }
+                    else { deviceIds.add(parts[i]); }
+                } catch (NumberFormatException e) {
+                    deviceIds.add(parts[i]);
+                }
+            }
+            if (deviceIds.size() < 2) {
+                System.out.println("Usage: rainbow <device1> <device2> <device3> [cycles] [delayMs]");
+                System.out.println("  Or:  rainbow rotate   — auto-load all discovered devices from cache");
+                System.out.println("  Example: rainbow obk1 obk2 obk3");
+                System.out.println("  Example: rainbow obk1 obk2 obk3 5 30");
+                return;
+            }
         }
+
         ensureMqttConnected(brokerUrl);
         if (colorRotation == null) {
             colorRotation = new ColorRotationAnimation(mqttService);
         }
 
-        List<String> deviceIds = new ArrayList<>();
-        int cycles = 3;
-        long delayMs = 50;
-
-        // Collect device IDs (everything that doesn't parse as a number)
-        for (int i = 1; i < parts.length; i++) {
-            try {
-                int val = Integer.parseInt(parts[i]);
-                // First number = cycles, second = delay
-                if (cycles == 3 && deviceIds.size() >= 2) { cycles = val; }
-                else if (deviceIds.size() >= 2) { delayMs = val; }
-                else { deviceIds.add(parts[i]); }
-            } catch (NumberFormatException e) {
-                deviceIds.add(parts[i]);
-            }
-        }
-
         System.out.println("\n╔═══════════════════════════════════════════════════════════╗");
         System.out.println("║        🌈 Color Rotation Animation                       ║");
         System.out.println("╚═══════════════════════════════════════════════════════════╝");
-        System.out.printf("  Devices:    %s\n", String.join(", ", deviceIds));
+        System.out.printf("  Devices:    %d bulbs\n", deviceIds.size());
+        for (String id : deviceIds) {
+            System.out.printf("              → %s\n", id);
+        }
         System.out.printf("  Hue Offset: %d° per bulb (%d bulbs)\n", 360 / deviceIds.size(), deviceIds.size());
         System.out.printf("  Cycles:     %s\n", cycles == 0 ? "∞ (infinite — use 'stop-anim' to stop)" : cycles);
         System.out.printf("  Delay:      %dms (%d Hz)\n", delayMs, 1000 / Math.max(delayMs, 1));
@@ -457,7 +584,112 @@ public class OpenBekenCLI {
         System.out.println();
 
         colorRotation.start(deviceIds, cycles, 10, delayMs, 100, 50);
-        System.out.println("✓ Animation started! Use 'stop-anim' to stop early.");
+        System.out.println("✓ Animation started! Use 'stop-anim' or Ctrl-C to stop.");
+    }
+
+    /**
+     * Load MQTT topic IDs from the discovery cache (.openbeken-cache.json).
+     * The cache is automatically loaded by OpenBekenDiscoveryService on startup.
+     * Also includes any MQTT-discovered devices if connected.
+     *
+     * IMPORTANT: The MQTT client topic on each device is set by configure-all to
+     * "obk{ip_with_underscores}" (e.g. obk192_168_86_66), which is what the device
+     * subscribes to. This may differ from the device hostname (e.g. obk17811957).
+     * We must use the IP-based topic to match what the device actually listens on.
+     */
+    private List<String> loadDiscoveredDeviceIds() {
+        Map<String, OpenBekenDevice> all = new HashMap<>(discoveryService.getDiscoveredDevices());
+        if (mqttService != null) {
+            all.putAll(mqttService.getDiscoveredDevices());
+        }
+        List<String> ids = new ArrayList<>();
+        for (OpenBekenDevice d : all.values()) {
+            String ip = d.getIp();
+            if (ip != null && !ip.isEmpty()) {
+                // Derive MQTT topic from IP — matches configure-all pattern
+                String mqttTopic = "obk" + ip.replace(".", "_");
+                ids.add(mqttTopic);
+                System.out.printf("  📡 %s → MQTT topic: %s (%s)\n",
+                        d.getDeviceId() != null ? d.getDeviceId() : ip,
+                        mqttTopic, ip);
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * Load bulb MQTT device IDs from devices.json.
+     * Filters to category "dj" (lights) with valid IPs, and derives the MQTT
+     * client ID using the same pattern as configure-all: obk{ip_with_underscores}
+     */
+    private List<String> loadBulbIdsFromDevicesJson(String path) {
+        List<String> ids = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader(path))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+            String json = sb.toString();
+            // Simple JSON parsing — extract category, ip, and name for each device
+            // Split by each object boundary
+            int idx = 0;
+            while (true) {
+                int start = json.indexOf("{", idx);
+                if (start < 0) break;
+                // Find the matching close brace at depth 1
+                int depth = 0;
+                int end = -1;
+                for (int i = start; i < json.length(); i++) {
+                    if (json.charAt(i) == '{') depth++;
+                    else if (json.charAt(i) == '}') {
+                        depth--;
+                        if (depth == 0) { end = i; break; }
+                    }
+                }
+                if (end < 0) break;
+                String obj = json.substring(start, end + 1);
+                idx = end + 1;
+
+                // Check category is "dj" (light bulb)
+                String category = extractJsonString(obj, "category");
+                if (!"dj".equals(category)) continue;
+
+                // Get IP
+                String ip = extractJsonString(obj, "ip");
+                if (ip == null || ip.isEmpty()) continue;
+
+                // Get name for display
+                String name = extractJsonString(obj, "name");
+
+                // Derive MQTT device ID: same as configure-all pattern
+                String mqttId = "obk" + ip.replace(".", "_");
+                ids.add(mqttId);
+                System.out.printf("  📡 %s (%s) → MQTT: %s\n", name, ip, mqttId);
+            }
+        } catch (Exception e) {
+            System.out.println("✗ Error loading " + path + ": " + e.getMessage());
+        }
+        return ids;
+    }
+
+    /**
+     * Extract a simple top-level string value from a JSON object string.
+     * Only matches the FIRST occurrence of "key":"value" (not nested).
+     */
+    private String extractJsonString(String json, String key) {
+        String pattern = "\"" + key + "\"";
+        int idx = json.indexOf(pattern);
+        if (idx < 0) return null;
+        // Find the colon after the key
+        int colon = json.indexOf(":", idx + pattern.length());
+        if (colon < 0) return null;
+        // Find the opening quote of the value
+        int qStart = json.indexOf("\"", colon + 1);
+        if (qStart < 0) return null;
+        int qEnd = json.indexOf("\"", qStart + 1);
+        if (qEnd < 0) return null;
+        return json.substring(qStart + 1, qEnd);
     }
 
     private void cmdStopAnim() {
@@ -484,6 +716,7 @@ public class OpenBekenCLI {
     private void cleanup() {
         if (colorRotation != null) { colorRotation.stopAll(); }
         if (mqttService != null) { mqttService.disconnect(); }
+        if (embeddedBroker != null) { embeddedBroker.stop(); }
     }
 
     /**

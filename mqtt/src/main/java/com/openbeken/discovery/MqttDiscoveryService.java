@@ -2,6 +2,7 @@ package com.openbeken.discovery;
 
 import com.openbeken.model.OpenBekenDevice;
 import org.eclipse.paho.client.mqttv3.*;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
 import java.time.Instant;
 import java.util.*;
@@ -37,7 +38,8 @@ public class MqttDiscoveryService implements MqttCallback {
      */
     public void connect(String brokerUrl) throws MqttException {
         this.brokerUrl = brokerUrl;
-        client = new MqttClient(brokerUrl, "obk-discovery-" + UUID.randomUUID().toString().substring(0, 8));
+        client = new MqttClient(brokerUrl, "obk-discovery-" + UUID.randomUUID().toString().substring(0, 8),
+                new MemoryPersistence());
 
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);

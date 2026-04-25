@@ -14,8 +14,22 @@ application {
 
 dependencies {
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
+    implementation("io.moquette:moquette-broker:0.17") {
+        exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+        exclude group: 'ch.qos.reload4j', module: 'reload4j'
+    }
+    implementation("org.slf4j:slf4j-simple:2.0.9")
 }
 
 run {
+    standardInput = System.in
+}
+
+// Standalone broker task: ./gradlew :mqtt:broker
+tasks.register('broker', JavaExec) {
+    group = 'application'
+    description = 'Start the embedded MQTT broker (Moquette) on port 1883'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.openbeken.broker.BrokerMain'
     standardInput = System.in
 }

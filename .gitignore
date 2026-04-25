@@ -4,3 +4,14 @@
 /mqtt/build/
 /.gradle/
 .openbeken-cache.json
+mqtt/data/
+data/
+
+# Paho MQTT client persistence directories
+*-tcplocalhost1883/
+obk-discovery-*/
+hue-bridge-app*/
+
+# Moquette broker data
+moquette_data/
+moquette_data.foo/

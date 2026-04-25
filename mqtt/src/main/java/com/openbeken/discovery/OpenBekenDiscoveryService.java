@@ -485,6 +485,44 @@ public class OpenBekenDiscoveryService {
     }
 
     /**
+     * Configure MQTT settings on an OpenBeken device via its /cfg_mqtt_set HTTP endpoint.
+     * The OpenBeken web UI form submits a GET to /cfg_mqtt_set with field names:
+     *   host, port, client, group, user, password
+     * Our Moquette broker uses allow_anonymous=true, so user/password are cleared.
+     *
+     * @param deviceIp   the device's IP address
+     * @param brokerHost the MQTT broker host/IP to point the device at
+     * @param brokerPort the MQTT broker port (typically 1883)
+     * @param clientId   unique MQTT client topic/ID for this device
+     * @param groupTopic the MQTT group topic (e.g. "openbeken")
+     * @return "configured", "already configured", or an error description
+     */
+    public String configureMqtt(String deviceIp, String brokerHost, int brokerPort,
+                                 String clientId, String groupTopic) {
+        // First, read the current MQTT config page to check existing settings
+        String cfgPage = httpGet("http://" + deviceIp + "/cfg_mqtt");
+        if (cfgPage == null) {
+            return "unreachable";
+        }
+
+        // Check if already configured with the correct broker host
+        boolean alreadyCorrect = cfgPage.contains("value=\"" + brokerHost + "\"");
+
+        // Build the config URL matching the actual OpenBeken form submission:
+        //   /cfg_mqtt_set?host=X&port=X&client=X&group=X&user=&password=
+        // User and password are empty since our Moquette broker uses allow_anonymous=true
+        String url = String.format(
+            "http://%s/cfg_mqtt_set?host=%s&port=%d&client=%s&group=%s&user=&password=",
+            deviceIp, brokerHost, brokerPort, urlEncode(clientId), urlEncode(groupTopic));
+
+        String response = httpGet(url);
+        if (response == null) {
+            return "failed";
+        }
+        return alreadyCorrect ? "already configured" : "configured";
+    }
+
+    /**
      * Simple URL encoding for startup command text.
      */
     private String urlEncode(String value) {

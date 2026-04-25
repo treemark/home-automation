@@ -155,6 +155,11 @@ The `mqtt` module now includes an interactive CLI for discovering and controllin
 | `broker [url]` | Show/set MQTT broker URL |
 | `subnet [prefix]` | Show/set subnet prefix for scanning |
 | `status` | Show connection status |
+| `configure-all [broker-ip]` / `ca` | Configure MQTT broker IP + `led_enableAll 1` on ALL discovered devices. Auto-detects this machine's LAN IP if broker-ip omitted. Sets mqtt_host, mqtt_port=1883, group=animations. |
+| `power-on-state <ip> <0-4>` / `pos` | Set PowerOnState on a device (0=OFF, 1=ON, 3=last state, 4=ON+lock) |
+| `rainbow <d1> <d2> <d3> [cycles] [delay]` | Color rotation animation across bulbs (120° offset) |
+| `stop-anim` / `sa` | Stop all running animations |
+| `animations` / `anims` | List running animations |
 
 ### Discovery Methods
 
@@ -203,6 +208,8 @@ mqtt/
     ├── main/
     │   ├── java/
     │   │   ├── com/openbeken/
+    │   │   │   ├── animation/
+    │   │   │   │   └── ColorRotationAnimation.java # Color rotation across multiple bulbs
     │   │   │   ├── cli/
     │   │   │   │   └── OpenBekenCLI.java          # Interactive CLI entry point
     │   │   │   ├── discovery/
