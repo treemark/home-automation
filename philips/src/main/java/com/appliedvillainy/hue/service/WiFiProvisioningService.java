@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
  * 4. Configures them to connect to the local MQTT broker
  * 5. Disconnects and allows device to join your network
  */
-@Service
+//@Service
 //@ConditionalOnProperty(name = "wifi.provisioning.enabled", havingValue = "true")
 public class WiFiProvisioningService {
 
