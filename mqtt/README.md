@@ -325,6 +325,15 @@ dependencies {
 
 > **⚠️ Large file generation note**: When using AI-assisted code generation tools (e.g., Cline), Java source files in this module should be kept under ~200 lines each. Larger files can exceed output token limits and fail to write. If a class is growing large, break it into smaller files (e.g., separate command handler classes, helper utilities) and use `replace_in_file` for incremental edits rather than full file rewrites.
 
+> **💬 Context Window Management**: AI coding sessions (Cline/Claude) have a finite context window. When the session reaches **~30% context remaining**, prompt the user:
+> ```
+> ⚠️ Context window is getting full. Please create a session summary:
+> 1. Ask me: "Summarize this session to SESSION_SUMMARY_YYYY-MM-DD.md"
+> 2. Start a fresh context window
+> 3. Begin next session with: "Read SESSION_SUMMARY_YYYY-MM-DD.md and continue"
+> ```
+> This prevents loss of work and ensures continuity across sessions. Session summaries should live in this repo (e.g., `mqtt/SESSION_SUMMARY_2026-04-25.md`).
+
 ## Roadmap
 
 - [ ] **Migrate animation services** from `philips/` into this module

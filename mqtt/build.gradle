@@ -19,6 +19,7 @@ dependencies {
         exclude group: 'ch.qos.reload4j', module: 'reload4j'
     }
     implementation("org.slf4j:slf4j-simple:2.0.9")
+    implementation("com.google.code.gson:gson:2.10.1")
 }
 
 run {
@@ -32,4 +33,22 @@ tasks.register('broker', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.openbeken.broker.BrokerMain'
     standardInput = System.in
+}
+
+// Google Home fulfillment server: ./gradlew :mqtt:googleHome
+// Set GOOGLE_HOME_TOKEN env var to use a persistent token across restarts.
+// Set MQTT_BROKER_URL to override broker URL (default: tcp://localhost:1883).
+tasks.register('googleHome', JavaExec) {
+    group = 'application'
+    description = 'Start Google Home fulfillment server + embedded MQTT broker on port 8080'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.openbeken.google.GoogleHomeMain'
+    // Only pass env vars if they are actually set (non-null, non-empty).
+    // If GOOGLE_HOME_TOKEN is not set, GoogleHomeMain generates a UUID automatically.
+    def ghPort  = System.getenv('GOOGLE_HOME_PORT')
+    def ghToken = System.getenv('GOOGLE_HOME_TOKEN')
+    def mqttUrl = System.getenv('MQTT_BROKER_URL')
+    if (ghPort)  environment 'GOOGLE_HOME_PORT',  ghPort
+    if (ghToken) environment 'GOOGLE_HOME_TOKEN', ghToken
+    if (mqttUrl) environment 'MQTT_BROKER_URL',   mqttUrl
 }
