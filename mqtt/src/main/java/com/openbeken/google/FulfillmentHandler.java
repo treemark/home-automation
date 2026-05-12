@@ -219,7 +219,7 @@ public class FulfillmentHandler implements HttpHandler {
 
     private JsonObject defaultState(String devId) {
         JsonObject s = new JsonObject();
-        s.addProperty("on", true);
+        s.addProperty("on", false);   // default OFF — avoids "all on" confusion after server restart
         s.addProperty("brightness", 100);
         s.addProperty("online", registry.findById(devId) != null && registry.findById(devId).isFlashed());
         return s;

@@ -30,13 +30,16 @@ public class OpenBekenDiscoveryService {
     private static final int PORT_CHECK_TIMEOUT_MS = 500;
     private static final int SCAN_THREAD_POOL_SIZE = 50;
     private static final String CACHE_FILE = ".openbeken-cache.json";
+    private static final String DRIVER_MAPPINGS_FILE = "/driver-mappings.json";
 
     private final Map<String, OpenBekenDevice> discoveredDevices = new ConcurrentHashMap<>();
+    private final Map<String, String> macPrefixToDriver = new HashMap<>();
 
     /**
-     * Constructor — loads any previously cached devices from disk.
+     * Constructor — loads any previously cached devices from disk and driver mappings.
      */
     public OpenBekenDiscoveryService() {
+        loadDriverMappings();
         loadCache();
     }
 
@@ -482,6 +485,268 @@ public class OpenBekenDiscoveryService {
             return "updated";
         }
         return "failed (verify)";
+    }
+
+    /**
+     * Ensure the startup command includes driver-specific channel mapping for correct color order.
+     * Only applies to drivers that need channel mapping (BP5758D, SM2135).
+     * PWM-based bulbs don't need channel mapping.
+     *
+     * @param ip device IP address
+     * @return result description: "already configured", "updated", "not needed", or "failed"
+     */
+    public String ensureChannelMapping(String ip) {
+        // Detect driver type
+        DriverType driverType = detectDriverType(ip);
+
+        // PWM drivers don't need channel mapping
+        if (driverType == DriverType.PWM || driverType == DriverType.UNKNOWN) {
+            return "not needed (" + driverType + ")";
+        }
+
+        String current = getStartupCommand(ip);
+        if (current == null) {
+            return "unreachable";
+        }
+
+        // Determine the appropriate mapping command based on driver type
+        String mapCommand;
+        String mapKeyword;
+        switch (driverType) {
+            case BP5758D:
+                mapCommand = "BP5758D_Map 2 1 0 4 5";
+                mapKeyword = "BP5758D_Map";
+                break;
+            case SM2135:
+                mapCommand = "SM2135_Map 2 1 0 4 5";  // SM2135 may need different mapping
+                mapKeyword = "SM2135_Map";
+                break;
+            default:
+                return "not needed";
+        }
+
+        // Already has channel mapping?
+        if (current.contains(mapKeyword)) {
+            return "already configured (" + driverType + ")";
+        }
+
+        // Build new startup command with channel mapping
+        String newCommand;
+        if (current.isEmpty()) {
+            newCommand = "backlog " + mapCommand + "; led_enableAll 1";
+        } else if (current.contains("backlog ")) {
+            // Insert map command at the beginning of backlog
+            newCommand = current.replace("backlog ", "backlog " + mapCommand + "; ");
+        } else {
+            // Wrap in backlog with map first
+            newCommand = "backlog " + mapCommand + "; " + current;
+        }
+
+        boolean ok = setStartupCommand(ip, newCommand);
+        if (!ok) {
+            return "failed";
+        }
+
+        // Verify it was saved
+        String verify = getStartupCommand(ip);
+        if (verify != null && verify.contains(mapKeyword)) {
+            return "updated (" + driverType + ")";
+        }
+        return "failed (verify)";
+    }
+
+    /**
+     * LED Driver types supported by OpenBeken devices.
+     */
+    public enum DriverType {
+        BP5758D,    // BP5758D I2C driver (roles 23/24)
+        PWM,        // Direct PWM control (role 7)
+        SM2135,     // SM2135 I2C driver (roles 21/22)
+        UNKNOWN
+    }
+
+    /**
+     * Load driver mappings from the resource file.
+     * Maps MAC address prefixes to driver types.
+     */
+    private void loadDriverMappings() {
+        try (InputStream is = getClass().getResourceAsStream(DRIVER_MAPPINGS_FILE)) {
+            if (is == null) {
+                System.err.println("Warning: driver-mappings.json not found in resources");
+                return;
+            }
+            BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+            String json = sb.toString();
+            
+            // Parse mac_prefixes object
+            Pattern p = Pattern.compile("\"mac_prefixes\"\\s*:\\s*\\{([^}]+)\\}");
+            Matcher m = p.matcher(json);
+            if (m.find()) {
+                String mappings = m.group(1);
+                // Parse each "prefix": "driver" pair
+                Pattern entryPattern = Pattern.compile("\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"");
+                Matcher entryMatcher = entryPattern.matcher(mappings);
+                while (entryMatcher.find()) {
+                    String prefix = entryMatcher.group(1);
+                    String driver = entryMatcher.group(2);
+                    macPrefixToDriver.put(prefix.toLowerCase(), driver);
+                }
+            }
+            System.out.println("Loaded " + macPrefixToDriver.size() + " MAC prefix mappings");
+        } catch (Exception e) {
+            System.err.println("Warning: failed to load driver mappings: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Detect driver type by MAC address prefix lookup.
+     *
+     * @param mac MAC address (format: "XX:XX:XX:XX:XX:XX")
+     * @return detected driver type or UNKNOWN if not found
+     */
+    private DriverType detectDriverTypeByMac(String mac) {
+        if (mac == null || mac.length() < 8) {
+            return DriverType.UNKNOWN;
+        }
+        
+        // Extract first 8 characters (first 3 octets) as prefix
+        String prefix = mac.substring(0, 8).toLowerCase();
+        String driverName = macPrefixToDriver.get(prefix);
+        
+        if (driverName == null) {
+            return DriverType.UNKNOWN;
+        }
+        
+        try {
+            return DriverType.valueOf(driverName.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            System.err.println("Warning: unknown driver type in mapping: " + driverName);
+            return DriverType.UNKNOWN;
+        }
+    }
+
+    /**
+     * Detect the LED driver type from MAC address (if available) or current pin configuration.
+     * Tries MAC address lookup first for faster detection, then falls back to pin inspection.
+     *
+     * @param ip device IP address
+     * @return detected driver type
+     */
+    public DriverType detectDriverType(String ip) {
+        // Try to get MAC address first for faster detection
+        String statusHtml = httpGet("http://" + ip + "/index");
+        if (statusHtml != null) {
+            // Extract MAC from page (format: "Device MAC: XX:XX:XX:XX:XX:XX")
+            Pattern macPattern = Pattern.compile("(?:MAC|Mac)\\s*:?\\s*([0-9A-Fa-f:]{17})");
+            Matcher macMatcher = macPattern.matcher(statusHtml);
+            if (macMatcher.find()) {
+                String mac = macMatcher.group(1);
+                DriverType typeByMac = detectDriverTypeByMac(mac);
+                if (typeByMac != DriverType.UNKNOWN) {
+                    return typeByMac;
+                }
+            }
+        }
+
+        // Fallback: detect from pin configuration
+        String cfgPage = httpGet("http://" + ip + "/cfg_pins");
+        if (cfgPage == null) {
+            return DriverType.UNKNOWN;
+        }
+
+        // Check for BP5758D (roles 23/24)
+        if (cfgPage.contains(",24,") && cfgPage.contains(",23,")) {
+            return DriverType.BP5758D;
+        }
+
+        // Check for SM2135 (roles 21/22)
+        if (cfgPage.contains(",21,") && cfgPage.contains(",22,")) {
+            return DriverType.SM2135;
+        }
+
+        // Check for PWM (role 7) - need multiple PWM pins for RGB
+        int pwmCount = 0;
+        for (int i = 0; i < cfgPage.length() - 10; i++) {
+            if (cfgPage.substring(i, Math.min(i + 4, cfgPage.length())).equals(",7,")) {
+                pwmCount++;
+            }
+        }
+        if (pwmCount >= 3) {
+            return DriverType.PWM;
+        }
+
+        return DriverType.UNKNOWN;
+    }
+
+    /**
+     * Configure GPIO pins based on detected driver type (from MAC or pins).
+     * For unconfigured devices, uses MAC address lookup to determine correct driver.
+     * Only configures BP5758D pins (PWM bulbs require manual configuration).
+     *
+     * @param ip device IP address
+     * @return result description: "configured", "already configured [type]", "skipped [type]", or "failed"
+     */
+    public String configureDriverPins(String ip) {
+        // Detect current driver type (tries MAC first, then pins)
+        DriverType currentType = detectDriverType(ip);
+
+        // If driver is already configured via pins, skip reconfiguration
+        if (currentType != DriverType.UNKNOWN) {
+            return "already configured (" + currentType + ")";
+        }
+
+        // For unconfigured devices, only auto-configure BP5758D
+        // PWM bulbs must be configured manually via web UI
+        return configureBP5758DPins(ip) + " (detected via MAC)";
+    }
+
+    /**
+     * Configure GPIO pins for BP5758D LED driver.
+     * Sets P7=BP5758D_CLK (role 24) and P8=BP5758D_DAT (role 23).
+     *
+     * @param ip device IP address
+     * @return result description: "configured", "already configured", or "failed"
+     */
+    private String configureBP5758DPins(String ip) {
+        // Check current pin configuration
+        String cfgPage = httpGet("http://" + ip + "/cfg_pins");
+        if (cfgPage == null) {
+            return "unreachable";
+        }
+
+        // Check if pins are already configured (P7=24, P8=23)
+        boolean alreadyConfigured = cfgPage.contains("f(\"P7 (PWM1) \",7,24,") && 
+                                     cfgPage.contains("f(\"P8 (PWM2) \",8,23,");
+
+        if (alreadyConfigured) {
+            return "already configured";
+        }
+
+        // Build pin configuration URL - set all pins, with P7=24 (BP5758D_CLK) and P8=23 (BP5758D_DAT)
+        StringBuilder url = new StringBuilder("http://" + ip + "/cfg_pins?");
+        for (int i = 0; i <= 28; i++) {
+            if (i > 0) url.append("&");
+            url.append(i).append("=");
+            if (i == 7) {
+                url.append("24"); // BP5758D_CLK
+            } else if (i == 8) {
+                url.append("23"); // BP5758D_DAT
+            } else {
+                url.append("0"); // No role
+            }
+        }
+
+        String response = httpGet(url.toString());
+        if (response == null || !response.contains("changed")) {
+            return "failed";
+        }
+
+        return "configured (BP5758D)";
     }
 
     /**

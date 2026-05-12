@@ -359,6 +359,8 @@ public class OpenBekenCLI {
 
         int mqttConfigured = 0, mqttAlready = 0, mqttFail = 0;
         int ledUpdated = 0, ledAlready = 0, ledFail = 0;
+        int pinsConfigured = 0, pinsAlready = 0, pinsFail = 0;
+        int mapUpdated = 0, mapAlready = 0, mapFail = 0;
 
         for (OpenBekenDevice d : withIps) {
             String deviceIp = d.getIp();
@@ -384,7 +386,36 @@ public class OpenBekenCLI {
                     break;
             }
 
-            // 2. Ensure led_enableAll 1 in startup command
+            // 2. Configure GPIO pins (auto-detects driver type)
+            String pinResult = discoveryService.configureDriverPins(deviceIp);
+            if (pinResult.startsWith("configured")) {
+                System.out.println("    ✓ GPIO pins — " + pinResult);
+                pinsConfigured++;
+            } else if (pinResult.startsWith("already configured")) {
+                System.out.println("    ✓ GPIO pins — " + pinResult);
+                pinsAlready++;
+            } else {
+                System.out.printf("    ✗ GPIO pins — %s\n", pinResult);
+                pinsFail++;
+            }
+
+            // 3. Ensure driver-specific channel mapping in startup command
+            String mapResult = discoveryService.ensureChannelMapping(deviceIp);
+            if (mapResult.startsWith("updated")) {
+                System.out.println("    ✓ Channel mapping — " + mapResult);
+                mapUpdated++;
+            } else if (mapResult.startsWith("already configured")) {
+                System.out.println("    ✓ Channel mapping — " + mapResult);
+                mapAlready++;
+            } else if (mapResult.startsWith("not needed")) {
+                System.out.println("    ○ Channel mapping — " + mapResult);
+                mapAlready++;
+            } else {
+                System.out.printf("    ✗ Channel mapping — %s\n", mapResult);
+                mapFail++;
+            }
+
+            // 4. Ensure led_enableAll 1 in startup command
             String ledResult = discoveryService.ensureLedEnableOnStartup(deviceIp);
             switch (ledResult) {
                 case "updated":
@@ -402,17 +433,21 @@ public class OpenBekenCLI {
             }
         }
 
-        System.out.println("\n╔═══════════════════════════════════════════════════════════╗");
-        System.out.println("║  Configuration Summary                                    ║");
-        System.out.println("╠═══════════════════════════════════════════════════════════╣");
+        System.out.println("\n╔════════════════════════════════════════════════════════════╗");
+        System.out.println("║  Configuration Summary                                     ║");
+        System.out.println("╠════════════════════════════════════════════════════════════╣");
         System.out.printf("║  MQTT broker:     %d configured, %d already OK, %d failed  \n",
                 mqttConfigured, mqttAlready, mqttFail);
         System.out.printf("║  led_enableAll:   %d updated, %d already OK, %d failed     \n",
                 ledUpdated, ledAlready, ledFail);
-        System.out.println("╚═══════════════════════════════════════════════════════════╝");
+        System.out.printf("║  GPIO pins:       %d configured, %d already OK, %d failed  \n",
+                pinsConfigured, pinsAlready, pinsFail);
+        System.out.printf("║  BP5758D_Map:     %d updated, %d already OK, %d failed     \n",
+                mapUpdated, mapAlready, mapFail);
+        System.out.println("╚════════════════════════════════════════════════════════════╝");
 
-        if (mqttConfigured > 0) {
-            System.out.println("\n⚠  Devices with new MQTT settings need a restart to connect to the broker.");
+        if (mqttConfigured > 0 || pinsConfigured > 0 || mapUpdated > 0) {
+            System.out.println("\n⚠  Devices with new settings need a restart to apply changes.");
             System.out.println("   Toggle power or use: curl http://<device-ip>/index?restart=1");
         }
     }

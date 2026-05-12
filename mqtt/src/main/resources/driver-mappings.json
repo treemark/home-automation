@@ -1,0 +1,17 @@
+{
+  "mac_prefixes": {
+    "10:5a:17": "BP5758D",
+    "38:2c:e5": "PWM"
+  },
+  "description": "MAC address prefix to LED driver type mappings",
+  "supported_drivers": [
+    "BP5758D - I2C LED driver with 2-pin control (CLK/DAT)",
+    "PWM - Direct PWM control with individual pins per channel",
+    "SM2135 - I2C LED driver with 2-pin control (CLK/DAT)"
+  ],
+  "notes": [
+    "Add more MAC prefixes as you discover new bulb models",
+    "MAC prefixes should be first 8 characters (e.g., '10:5a:17')",
+    "If no match found, system falls back to pin detection"
+  ]
+}

@@ -26,6 +26,22 @@ run {
     standardInput = System.in
 }
 
+// Create a fat JAR with all dependencies
+jar {
+    manifest {
+        attributes(
+            'Main-Class': application.mainClass.get(),
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version
+        )
+    }
+    // Include all runtime dependencies
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 // Standalone broker task: ./gradlew :mqtt:broker
 tasks.register('broker', JavaExec) {
     group = 'application'
