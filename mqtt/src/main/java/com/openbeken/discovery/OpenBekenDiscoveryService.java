@@ -75,7 +75,7 @@ public class OpenBekenDiscoveryService {
                 OpenBekenDevice device = future.get(HTTP_TIMEOUT_MS + 1000, TimeUnit.MILLISECONDS);
                 if (device != null) {
                     device.setDiscoveryMethod("http-scan");
-                    discoveredDevices.put(device.getIp(), device);
+                    discoveredDevices.put(device.getDeviceId(), device);
                     results.add(device);
                     if (listener != null) {
                         listener.onDeviceFound(device);
@@ -121,7 +121,7 @@ public class OpenBekenDiscoveryService {
                 OpenBekenDevice device = future.get(HTTP_TIMEOUT_MS + 1000, TimeUnit.MILLISECONDS);
                 if (device != null) {
                     device.setDiscoveryMethod("inventory-probe");
-                    discoveredDevices.put(device.getIp(), device);
+                    discoveredDevices.put(device.getDeviceId(), device);
                     results.add(device);
                     if (listener != null) {
                         listener.onDeviceFound(device);
@@ -686,23 +686,100 @@ public class OpenBekenDiscoveryService {
     /**
      * Configure GPIO pins based on detected driver type (from MAC or pins).
      * For unconfigured devices, uses MAC address lookup to determine correct driver.
-     * Only configures BP5758D pins (PWM bulbs require manual configuration).
+     * Automatically configures BP5758D or PWM pins based on detection.
      *
      * @param ip device IP address
      * @return result description: "configured", "already configured [type]", "skipped [type]", or "failed"
      */
     public String configureDriverPins(String ip) {
-        // Detect current driver type (tries MAC first, then pins)
-        DriverType currentType = detectDriverType(ip);
-
-        // If driver is already configured via pins, skip reconfiguration
-        if (currentType != DriverType.UNKNOWN) {
-            return "already configured (" + currentType + ")";
+        // First, detect via MAC to know what type of bulb this is
+        String statusHtml = httpGet("http://" + ip + "/index");
+        DriverType typeByMac = DriverType.UNKNOWN;
+        
+        if (statusHtml != null) {
+            Pattern macPattern = Pattern.compile("(?:MAC|Mac)\\s*:?\\s*([0-9A-Fa-f:]{17})");
+            Matcher macMatcher = macPattern.matcher(statusHtml);
+            if (macMatcher.find()) {
+                String mac = macMatcher.group(1);
+                typeByMac = detectDriverTypeByMac(mac);
+            }
         }
 
-        // For unconfigured devices, only auto-configure BP5758D
-        // PWM bulbs must be configured manually via web UI
-        return configureBP5758DPins(ip) + " (detected via MAC)";
+        // Now configure the appropriate driver based on MAC detection
+        if (typeByMac == DriverType.PWM) {
+            return configurePWMPins(ip);
+        } else if (typeByMac == DriverType.BP5758D) {
+            return configureBP5758DPins(ip);
+        }
+
+        // If MAC detection failed, try pin detection as fallback
+        DriverType typeByPins = detectDriverType(ip);
+        if (typeByPins != DriverType.UNKNOWN) {
+            return "already configured (" + typeByPins + ")";
+        }
+
+        // Default to BP5758D for unknown
+        return configureBP5758DPins(ip) + " (default)";
+    }
+
+    /**
+     * Configure GPIO pins for PWM LED driver.
+     * Sets P6, P7, P8, P24, P26 to PWM role (7) with proper channel assignments for RGB+CW+WW control.
+     * Channel mapping: P8=1 (Blue), P24=2 (Red), P26=3 (Green), P7=4 (Cool White), P6=5 (Warm White)
+     *
+     * @param ip device IP address
+     * @return result description: "configured", "already configured", or "failed"
+     */
+    private String configurePWMPins(String ip) {
+        // Check current pin configuration
+        String cfgPage = httpGet("http://" + ip + "/cfg_pins");
+        if (cfgPage == null) {
+            return "unreachable";
+        }
+
+        // Check if PWM pins are already configured with correct roles AND channels
+        boolean alreadyConfigured = cfgPage.contains("f(\"P6 (PWM0) \",6,7, 0,5,null,)") && 
+                                     cfgPage.contains("f(\"P7 (PWM1) \",7,7, 0,4,null,)") &&
+                                     cfgPage.contains("f(\"P8 (PWM2) \",8,7, 0,1,null,)") &&
+                                     cfgPage.contains("f(\"P24 (PWM4) \",24,7, 0,2,null,)") &&
+                                     cfgPage.contains("f(\"P26 (PWM5) \",26,7, 0,3,null,)");
+
+        if (alreadyConfigured) {
+            return "already configured";
+        }
+
+        // Build pin configuration URL - set PWM pins to role 7 with channel numbers
+        // URL format: /cfg_pins?0=0&1=0&...&6=7&r6=5&...
+        // Where pin=role and rPin=channel
+        StringBuilder url = new StringBuilder("http://" + ip + "/cfg_pins?");
+        
+        // First, set all pin roles
+        for (int i = 0; i <= 28; i++) {
+            if (i > 0) url.append("&");
+            url.append(i).append("=");
+            // Set PWM role (7) for RGB + warm/cool white pins
+            if (i == 6 || i == 7 || i == 8 || i == 24 || i == 26) {
+                url.append("7"); // PWM role
+            } else {
+                url.append("0"); // No role
+            }
+        }
+        
+        // Now add channel assignments for PWM pins
+        // P8=channel 1 (Blue), P24=channel 2 (Red), P26=channel 3 (Green)
+        // P7=channel 4 (Cool White), P6=channel 5 (Warm White)
+        url.append("&r6=5");   // P6 → channel 5 (Warm White)
+        url.append("&r7=4");   // P7 → channel 4 (Cool White)
+        url.append("&r8=1");   // P8 → channel 1 (Blue)
+        url.append("&r24=2");  // P24 → channel 2 (Red)
+        url.append("&r26=3");  // P26 → channel 3 (Green)
+
+        String response = httpGet(url.toString());
+        if (response == null || !response.contains("changed")) {
+            return "failed";
+        }
+
+        return "configured (PWM)";
     }
 
     /**
@@ -870,8 +947,8 @@ public class OpenBekenDiscoveryService {
                     if (depth == 0 && objStart >= 0) {
                         String obj = json.substring(objStart, i + 1);
                         OpenBekenDevice device = parseCachedDevice(obj);
-                        if (device != null && device.getIp() != null) {
-                            discoveredDevices.put(device.getIp(), device);
+                        if (device != null && device.getDeviceId() != null) {
+                            discoveredDevices.put(device.getDeviceId(), device);
                         }
                         objStart = -1;
                     }

@@ -627,10 +627,8 @@ public class OpenBekenCLI {
      * The cache is automatically loaded by OpenBekenDiscoveryService on startup.
      * Also includes any MQTT-discovered devices if connected.
      *
-     * IMPORTANT: The MQTT client topic on each device is set by configure-all to
-     * "obk{ip_with_underscores}" (e.g. obk192_168_86_66), which is what the device
-     * subscribes to. This may differ from the device hostname (e.g. obk17811957).
-     * We must use the IP-based topic to match what the device actually listens on.
+     * Uses the mqttTopic field if available (IP-based topic from configure-all),
+     * otherwise derives from current IP, or falls back to deviceId.
      */
     private List<String> loadDiscoveredDeviceIds() {
         Map<String, OpenBekenDevice> all = new HashMap<>(discoveryService.getDiscoveredDevices());
@@ -639,14 +637,33 @@ public class OpenBekenCLI {
         }
         List<String> ids = new ArrayList<>();
         for (OpenBekenDevice d : all.values()) {
+            String mqttTopic = null;
             String ip = d.getIp();
-            if (ip != null && !ip.isEmpty()) {
-                // Derive MQTT topic from IP — matches configure-all pattern
-                String mqttTopic = "obk" + ip.replace(".", "_");
+            
+            // Priority 1: Use saved mqttTopic if it matches current IP
+            if (d.getMqttTopic() != null && ip != null) {
+                String expectedTopic = "obk" + ip.replace(".", "_");
+                if (d.getMqttTopic().equals(expectedTopic)) {
+                    mqttTopic = d.getMqttTopic();
+                }
+            }
+            
+            // Priority 2: Derive from current IP
+            if (mqttTopic == null && ip != null && !ip.isEmpty()) {
+                mqttTopic = "obk" + ip.replace(".", "_");
+            }
+            
+            // Priority 3: Fall back to deviceId
+            if (mqttTopic == null && d.getDeviceId() != null) {
+                mqttTopic = d.getDeviceId();
+            }
+            
+            if (mqttTopic != null) {
                 ids.add(mqttTopic);
-                System.out.printf("  📡 %s → MQTT topic: %s (%s)\n",
-                        d.getDeviceId() != null ? d.getDeviceId() : ip,
-                        mqttTopic, ip);
+                System.out.printf("  📡 %s → MQTT: %s (%s)\n", 
+                    d.getDeviceId() != null ? d.getDeviceId() : "?",
+                    mqttTopic,
+                    ip != null ? ip : "N/A");
             }
         }
         return ids;
