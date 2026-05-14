@@ -94,8 +94,10 @@ public class MoquetteBrokerService {
         // Allow anonymous access (no authentication required)
         properties.setProperty("allow_anonymous", String.valueOf(moquetteConfig.isAllowAnonymous()));
         
-        // Persistence configuration
-        properties.setProperty("persistent_store", "./moquette_data/moquette_store.mapdb");
+        // Persistence configuration - use ~/.mqtt/moquette_data
+        String home = System.getProperty("user.home");
+        String dataPath = home + "/.mqtt/moquette_data/moquette_store.mapdb";
+        properties.setProperty("persistent_store", dataPath);
         
         // QoS settings
         properties.setProperty("immediate_buffer_flush", "true");

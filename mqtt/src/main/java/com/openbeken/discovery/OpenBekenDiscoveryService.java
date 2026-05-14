@@ -1,6 +1,10 @@
 package com.openbeken.discovery;
 
+import com.openbeken.model.GoogleHomeDevice;
+import com.openbeken.model.GoogleHomeDevicesConfig;
+import com.openbeken.model.GoogleHomeScene;
 import com.openbeken.model.OpenBekenDevice;
+import com.openbeken.util.JsonUtil;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -14,7 +18,6 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * Service for discovering OpenBeken devices on the local network.
@@ -29,18 +32,44 @@ public class OpenBekenDiscoveryService {
     private static final int HTTP_TIMEOUT_MS = 2000;
     private static final int PORT_CHECK_TIMEOUT_MS = 500;
     private static final int SCAN_THREAD_POOL_SIZE = 50;
-    private static final String CACHE_FILE = ".openbeken-cache.json";
     private static final String DRIVER_MAPPINGS_FILE = "/driver-mappings.json";
 
     private final Map<String, OpenBekenDevice> discoveredDevices = new ConcurrentHashMap<>();
     private final Map<String, String> macPrefixToDriver = new HashMap<>();
+    private final Path mqttConfigDir;
+    private final Path cacheFilePath;
 
     /**
      * Constructor — loads any previously cached devices from disk and driver mappings.
      */
     public OpenBekenDiscoveryService() {
+        this.mqttConfigDir = getMqttConfigDirectory();
+        this.cacheFilePath = mqttConfigDir.resolve("openbeken-cache.json");
+        ensureConfigDirectoryExists();
         loadDriverMappings();
         loadCache();
+    }
+
+    /**
+     * Get the ~/.mqtt/ configuration directory path.
+     */
+    private static Path getMqttConfigDirectory() {
+        String home = System.getProperty("user.home");
+        return Path.of(home, ".mqtt");
+    }
+
+    /**
+     * Ensure the ~/.mqtt/ directory exists, creating it if necessary.
+     */
+    private void ensureConfigDirectoryExists() {
+        try {
+            if (!Files.exists(mqttConfigDir)) {
+                Files.createDirectories(mqttConfigDir);
+                System.out.println("[Discovery] Created config directory: " + mqttConfigDir);
+            }
+        } catch (IOException e) {
+            System.err.println("[Discovery] Warning: Failed to create config directory: " + e.getMessage());
+        }
     }
 
     /**
@@ -409,6 +438,18 @@ public class OpenBekenDiscoveryService {
         return httpGet("http://" + ip + "/cm?cmnd=" + encoded);
     }
 
+    /**
+     * Restart an OpenBeken device via HTTP.
+     * Uses the /index?restart=1 endpoint.
+     *
+     * @param ip device IP address
+     * @return true if restart command was sent successfully
+     */
+    public boolean restartDevice(String ip) {
+        String response = httpGet("http://" + ip + "/index?restart=1");
+        return response != null;
+    }
+
     // --- Startup command management ---
 
     /**
@@ -695,12 +736,12 @@ public class OpenBekenDiscoveryService {
         // First, detect via MAC to know what type of bulb this is
         String statusHtml = httpGet("http://" + ip + "/index");
         DriverType typeByMac = DriverType.UNKNOWN;
-        
+        String mac="??";
         if (statusHtml != null) {
             Pattern macPattern = Pattern.compile("(?:MAC|Mac)\\s*:?\\s*([0-9A-Fa-f:]{17})");
             Matcher macMatcher = macPattern.matcher(statusHtml);
             if (macMatcher.find()) {
-                String mac = macMatcher.group(1);
+                mac = macMatcher.group(1);
                 typeByMac = detectDriverTypeByMac(mac);
             }
         }
@@ -710,16 +751,19 @@ public class OpenBekenDiscoveryService {
             return configurePWMPins(ip);
         } else if (typeByMac == DriverType.BP5758D) {
             return configureBP5758DPins(ip);
+        } else {
+            detectDriverType(ip);
+            return "UNKNOWN mac: " + mac;
         }
 
         // If MAC detection failed, try pin detection as fallback
-        DriverType typeByPins = detectDriverType(ip);
-        if (typeByPins != DriverType.UNKNOWN) {
-            return "already configured (" + typeByPins + ")";
-        }
-
-        // Default to BP5758D for unknown
-        return configureBP5758DPins(ip) + " (default)";
+//        DriverType typeByPins = detectDriverType(ip);
+//        if (typeByPins != DriverType.UNKNOWN) {
+//            return "already configured (" + typeByPins + ")";
+//        }
+//
+//        // Default to BP5758D for unknown
+//        return configureBP5758DPins(ip) + " (default)";
     }
 
     /**
@@ -920,7 +964,7 @@ public class OpenBekenDiscoveryService {
                 i++;
             }
             sb.append("\n]");
-            Files.writeString(Path.of(CACHE_FILE), sb.toString());
+            Files.writeString(cacheFilePath, sb.toString());
         } catch (Exception e) {
             System.err.println("Warning: failed to save device cache: " + e.getMessage());
         }
@@ -930,10 +974,9 @@ public class OpenBekenDiscoveryService {
      * Load previously cached devices from disk.
      */
     private void loadCache() {
-        Path cachePath = Path.of(CACHE_FILE);
-        if (!Files.exists(cachePath)) return;
+        if (!Files.exists(cacheFilePath)) return;
         try {
-            String json = Files.readString(cachePath);
+            String json = Files.readString(cacheFilePath);
             // Reuse the same brace-matching approach to parse the array of device objects
             int depth = 0;
             int objStart = -1;
@@ -989,6 +1032,94 @@ public class OpenBekenDiscoveryService {
     private String jsonStr(String value) {
         if (value == null) return "null";
         return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    /**
+     * Sync discovered devices to google-home-devices.json.
+     * Matches devices by short ID (last 6 chars of deviceId).
+     * For existing IDs: preserves name/room, updates IP only if changed.
+     * For new IDs: adds them with auto-generated names.
+     */
+    public void syncToGoogleHomeDevices(String googleHomeJsonPath) {
+        try {
+            Path path = Path.of(googleHomeJsonPath);
+            GoogleHomeDevicesConfig config;
+            
+            // Read existing google-home-devices.json using Jackson
+            if (Files.exists(path)) {
+                String existingJson = Files.readString(path);
+                config = JsonUtil.fromJson(existingJson, GoogleHomeDevicesConfig.class);
+            } else {
+                config = new GoogleHomeDevicesConfig();
+                config.setComment("Google Home device registry - edit rooms/names freely. ip drives the MQTT topic (obk{ip_with_underscores}). Devices with no ip are not yet flashed.");
+            }
+            
+            // Build map of existing devices by ID
+            Map<String, GoogleHomeDevice> existingDevices = new LinkedHashMap<>();
+            for (GoogleHomeDevice device : config.getDevices()) {
+                existingDevices.put(device.getId(), device);
+            }
+            
+            // Build map of shortId -> discovered device
+            Map<String, OpenBekenDevice> discoveredByShortId = new HashMap<>();
+            for (OpenBekenDevice device : discoveredDevices.values()) {
+                if (device.getIp() == null || device.getIp().isEmpty()) continue;
+                String deviceId = device.getDeviceId();
+                String shortId = deviceId.length() > 10 ? deviceId.substring(deviceId.length() - 6) : deviceId;
+                discoveredByShortId.put(shortId, device);
+            }
+            
+            int updatedCount = 0;
+            int newCount = 0;
+            
+            // Update IPs for existing device IDs (preserve name/room)
+            for (GoogleHomeDevice ghd : existingDevices.values()) {
+                OpenBekenDevice discovered = discoveredByShortId.get(ghd.getId());
+                if (discovered != null) {
+                    // Update IP if it changed
+                    if (!discovered.getIp().equals(ghd.getIp())) {
+                        ghd.setIp(discovered.getIp());
+                        updatedCount++;
+                    }
+                    // Remove from map so we don't add it as new
+                    discoveredByShortId.remove(ghd.getId());
+                }
+            }
+            
+            // Add new devices (short IDs not in existing devices)
+            for (Map.Entry<String, OpenBekenDevice> entry : discoveredByShortId.entrySet()) {
+                String shortId = entry.getKey();
+                OpenBekenDevice device = entry.getValue();
+                
+                // Make sure the ID is unique (shouldn't happen but just in case)
+                String finalId = shortId;
+                int suffix = 1;
+                while (existingDevices.containsKey(finalId)) {
+                    finalId = shortId + "_" + suffix;
+                    suffix++;
+                }
+                
+                GoogleHomeDevice newDevice = new GoogleHomeDevice(finalId, "Light " + shortId, "Uncategorized", device.getIp());
+                existingDevices.put(finalId, newDevice);
+                newCount++;
+            }
+            
+            // Sort devices by room then name
+            List<GoogleHomeDevice> sortedDevices = new ArrayList<>(existingDevices.values());
+            sortedDevices.sort(Comparator.comparing((GoogleHomeDevice d) -> d.getRoom() + d.getName()));
+            config.setDevices(sortedDevices);
+            
+            // Write updated JSON using Jackson
+            String updatedJson = JsonUtil.toJson(config);
+            Files.writeString(path, updatedJson);
+            
+            System.out.printf("[Sync] Updated google-home-devices.json: %d IPs updated, %d new devices added\n", 
+                    updatedCount, newCount);
+            
+        } catch (Exception e) {
+            System.err.println("[Sync] Failed to sync to google-home-devices.json: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     /**

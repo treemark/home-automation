@@ -16,7 +16,7 @@ import time
 def load_devices():
     """Load devices from devices.json"""
     try:
-        with open('devices.json', 'r') as f:
+        with open('old_tuya-devices.json', 'r') as f:
             data = json.load(f)
             if isinstance(data, list):
                 return data

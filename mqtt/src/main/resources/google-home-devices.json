@@ -1,9 +1,14 @@
 {
   "_comment": "Google Home device registry - edit rooms/names freely. ip drives the MQTT topic (obk{ip_with_underscores}). Devices with no ip are not yet flashed.",
   "devices": [
-    { "id": "O4",  "name": "Office Bulb 4",     "room": "Office",      "ip": "192.168.86.186" },
-    { "id": "O5",  "name": "Office Bulb 5",     "room": "Office",      "ip": "192.168.86.66" },
-    { "id": "O6",  "name": "Office Bulb 6",     "room": "Office",      "ip": "192.168.86.25" }
+    { "id": "20E01A", "name": "Light 20E01A", "room": "Uncategorized", "ip": "192.168.86.60" },
+    { "id": "20E78A", "name": "Light 20E78A", "room": "Uncategorized", "ip": "192.168.86.135" },
+    { "id": "211DEE", "name": "Light 211DEE", "room": "Uncategorized", "ip": "192.168.86.111" },
+    { "id": "433862", "name": "Light 433862", "room": "Uncategorized", "ip": "192.168.86.30" },
+    { "id": "80CCB7", "name": "Light 80CCB7", "room": "Uncategorized", "ip": "192.168.86.49" },
+    { "id": "8104E2", "name": "Light 8104E2", "room": "Uncategorized", "ip": "192.168.86.186" },
+    { "id": "811957", "name": "Light 811957", "room": "Uncategorized", "ip": "192.168.86.66" },
+    { "id": "814362", "name": "Light 814362", "room": "Uncategorized", "ip": "192.168.86.205" }
   ],
   "scenes": [
     { "id": "scene-rainbow-kitchen",   "name": "Rainbow Kitchen",   "room": "Kitchen",     "animation": "rainbow",  "group": "K1,K2,K3,K4,K5,K6,Kp1,Kp2,Wok1" },
@@ -12,4 +17,8 @@
     { "id": "scene-warm-all",          "name": "Warm White",        "room": "Living Room", "animation": "warm",     "group": "animations" },
     { "id": "scene-cool-all",          "name": "Cool White",        "room": "Living Room", "animation": "cool",     "group": "animations" }
   ]
+}
+}
+}
+}
 }

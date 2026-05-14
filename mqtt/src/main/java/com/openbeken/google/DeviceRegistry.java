@@ -1,10 +1,15 @@
 package com.openbeken.google;
 
-import com.google.gson.*;
+import com.openbeken.model.GoogleHomeDevice;
+import com.openbeken.model.GoogleHomeDevicesConfig;
+import com.openbeken.model.GoogleHomeScene;
+import com.openbeken.util.JsonUtil;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Loads and serves the Google Home device registry.
@@ -12,66 +17,85 @@ import java.util.*;
  * Source: mqtt/src/main/resources/google-home-devices.json
  * Only includes LIGHT devices with a valid IP (i.e. already flashed with OpenBeken).
  * Scenes are always included regardless of flash status.
+ * 
+ * Automatically watches for file changes and reloads when updated.
  */
 public class DeviceRegistry {
 
     private final List<GoogleDevice> devices = new ArrayList<>();
     private final Map<String, GoogleDevice> byId = new LinkedHashMap<>();
+    private final AtomicBoolean watching = new AtomicBoolean(false);
+    private Thread watchThread;
+    private final Path configFilePath;
 
     public DeviceRegistry() {
-        loadFromClasspath();
+        String home = System.getProperty("user.home");
+        this.configFilePath = Path.of(home, ".mqtt", "google-home-devices.json");
+        ensureConfigFileExists();
+        loadFromFile();
+        startFileWatcher();
     }
 
-    private void loadFromClasspath() {
-        try (InputStream in = getClass().getClassLoader()
-                .getResourceAsStream("google-home-devices.json")) {
-            if (in == null) {
-                System.err.println("[Registry] google-home-devices.json not found on classpath");
+    /**
+     * Ensure the config file exists. If not, create it with an empty structure.
+     */
+    private void ensureConfigFileExists() {
+        try {
+            if (!Files.exists(configFilePath)) {
+                // Create the directory if it doesn't exist
+                Files.createDirectories(configFilePath.getParent());
+                
+                // Create an empty config file with basic structure
+                String emptyConfig = """
+                    {
+                      "_comment": "Google Home device registry - edit rooms/names freely. ip drives the MQTT topic (obk{ip_with_underscores}). Devices with no ip are not yet flashed.",
+                      "devices": [],
+                      "scenes": []
+                    }
+                    """;
+                Files.writeString(configFilePath, emptyConfig, StandardCharsets.UTF_8);
+                System.out.println("[Registry] Created config file: " + configFilePath);
+            }
+        } catch (IOException e) {
+            System.err.println("[Registry] Warning: Failed to create config file: " + e.getMessage());
+        }
+    }
+
+    private void loadFromFile() {
+        try {
+            if (!Files.exists(configFilePath)) {
+                System.err.println("[Registry] google-home-devices.json not found at " + configFilePath);
                 return;
             }
-            String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            String json = Files.readString(configFilePath, StandardCharsets.UTF_8);
             parseJson(json);
-            System.out.printf("[Registry] Loaded %d devices (%d flashed lights, %d scenes)%n",
+            System.out.printf("[Registry] Loaded %d devices (%d flashed lights, %d scenes) from %s%n",
                     devices.size(),
                     devices.stream().filter(d -> d.getType() == GoogleDevice.Type.LIGHT && d.isFlashed()).count(),
-                    devices.stream().filter(d -> d.getType() == GoogleDevice.Type.SCENE).count());
+                    devices.stream().filter(d -> d.getType() == GoogleDevice.Type.SCENE).count(),
+                    configFilePath);
         } catch (Exception e) {
             System.err.println("[Registry] Failed to load device registry: " + e.getMessage());
         }
     }
 
     private void parseJson(String json) {
-        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        GoogleHomeDevicesConfig config = JsonUtil.fromJson(json, GoogleHomeDevicesConfig.class);
 
-        // Parse lights
-        JsonArray devArr = root.getAsJsonArray("devices");
-        for (JsonElement el : devArr) {
-            JsonObject obj = el.getAsJsonObject();
-            String id   = obj.get("id").getAsString();
-            String name = obj.get("name").getAsString();
-            String room = obj.get("room").getAsString();
-            String ip   = obj.has("ip") ? obj.get("ip").getAsString() : "";
-
-            GoogleDevice device = new GoogleDevice(id, name, room, ip);
+        // Parse lights - convert GoogleHomeDevice to GoogleDevice
+        for (GoogleHomeDevice ghd : config.getDevices()) {
+            String ip = (ghd.getIp() != null) ? ghd.getIp() : "";
+            GoogleDevice device = new GoogleDevice(ghd.getId(), ghd.getName(), ghd.getRoom(), ip);
             devices.add(device);
-            byId.put(id, device);
+            byId.put(ghd.getId(), device);
         }
 
-        // Parse scenes
-        if (root.has("scenes")) {
-            JsonArray scArr = root.getAsJsonArray("scenes");
-            for (JsonElement el : scArr) {
-                JsonObject obj = el.getAsJsonObject();
-                String id        = obj.get("id").getAsString();
-                String name      = obj.get("name").getAsString();
-                String room      = obj.get("room").getAsString();
-                String animation = obj.get("animation").getAsString();
-                String group     = obj.get("group").getAsString();
-
-                GoogleDevice scene = new GoogleDevice(id, name, room, animation, group);
-                devices.add(scene);
-                byId.put(id, scene);
-            }
+        // Parse scenes - convert GoogleHomeScene to GoogleDevice
+        for (GoogleHomeScene ghs : config.getScenes()) {
+            GoogleDevice scene = new GoogleDevice(ghs.getId(), ghs.getName(), ghs.getRoom(), 
+                    ghs.getAnimation(), ghs.getGroup());
+            devices.add(scene);
+            byId.put(ghs.getId(), scene);
         }
     }
 
@@ -102,5 +126,111 @@ public class DeviceRegistry {
     /** Count of all registered devices (including unflashed lights and scenes). */
     public int size() {
         return devices.size();
+    }
+    
+    /**
+     * Start a background thread to watch for changes to google-home-devices.json
+     * and reload automatically when it's updated.
+     */
+    private void startFileWatcher() {
+        if (watching.get()) return;
+        
+        watching.set(true);
+        watchThread = new Thread(() -> {
+            try {
+                // Watch the ~/.mqtt/ directory
+                Path watchDir = configFilePath.getParent();
+                if (!Files.exists(watchDir)) {
+                    System.err.println("[Registry] Config directory not found, file watching disabled");
+                    return;
+                }
+                
+                WatchService watchService = FileSystems.getDefault().newWatchService();
+                watchDir.register(watchService, 
+                    StandardWatchEventKinds.ENTRY_MODIFY,
+                    StandardWatchEventKinds.ENTRY_CREATE);
+                
+                System.out.println("[Registry] File watcher started for " + configFilePath);
+                
+                while (watching.get()) {
+                    WatchKey key;
+                    try {
+                        key = watchService.take();
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                    
+                    for (WatchEvent<?> event : key.pollEvents()) {
+                        WatchEvent.Kind<?> kind = event.kind();
+                        
+                        if (kind == StandardWatchEventKinds.OVERFLOW) {
+                            continue;
+                        }
+                        
+                        @SuppressWarnings("unchecked")
+                        WatchEvent<Path> ev = (WatchEvent<Path>) event;
+                        Path filename = ev.context();
+                        
+                        if (filename.toString().equals("google-home-devices.json")) {
+                            System.out.println("[Registry] google-home-devices.json changed, reloading...");
+                            Thread.sleep(100); // Small delay to ensure file is fully written
+                            reloadFromFile();
+                        }
+                    }
+                    
+                    boolean valid = key.reset();
+                    if (!valid) {
+                        break;
+                    }
+                }
+                
+                watchService.close();
+            } catch (Exception e) {
+                System.err.println("[Registry] File watcher error: " + e.getMessage());
+            }
+        }, "DeviceRegistry-FileWatcher");
+        
+        watchThread.setDaemon(true);
+        watchThread.start();
+    }
+    
+    /**
+     * Reload device registry from the file system.
+     * This is used by the file watcher when changes are detected.
+     */
+    private synchronized void reloadFromFile() {
+        try {
+            if (!Files.exists(configFilePath)) {
+                System.err.println("[Registry] File not found: " + configFilePath);
+                return;
+            }
+            
+            String json = Files.readString(configFilePath, StandardCharsets.UTF_8);
+            
+            // Clear existing devices
+            devices.clear();
+            byId.clear();
+            
+            // Parse and reload
+            parseJson(json);
+            
+            System.out.printf("[Registry] Reloaded %d devices (%d flashed lights, %d scenes)%n",
+                    devices.size(),
+                    devices.stream().filter(d -> d.getType() == GoogleDevice.Type.LIGHT && d.isFlashed()).count(),
+                    devices.stream().filter(d -> d.getType() == GoogleDevice.Type.SCENE).count());
+        } catch (Exception e) {
+            System.err.println("[Registry] Failed to reload device registry: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Stop the file watcher thread (for cleanup).
+     */
+    public void stopWatching() {
+        watching.set(false);
+        if (watchThread != null) {
+            watchThread.interrupt();
+        }
     }
 }

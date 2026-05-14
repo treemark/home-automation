@@ -3,7 +3,8 @@
 /philips/build/
 /mqtt/build/
 /.gradle/
-.openbeken-cache.json
+openbeken-cache.json
+google-home-devices.json
 mqtt/data/
 data/
 
@@ -11,7 +12,3 @@ data/
 *-tcplocalhost1883/
 obk-discovery-*/
 hue-bridge-app*/
-
-# Moquette broker data
-moquette_data/
-moquette_data.foo/

@@ -30,12 +30,16 @@ import java.util.UUID;
  */
 public class GoogleHomeMain {
 
+    static private String GOOGLE_HOME_TOKEN="meow123";
+    static private String GOOGLE_OAUTH_CLIENT_ID="6688-mqtt";
+    static private String GOOGLE_OAUTH_CLIENT_SECRET="meow123";
+
     public static void main(String[] args) throws Exception {
         int    port      = Integer.parseInt(System.getenv().getOrDefault("GOOGLE_HOME_PORT", "8080"));
         String brokerUrl = System.getenv().getOrDefault("MQTT_BROKER_URL", "tcp://localhost:1883");
 
         // Token: use env var if set and non-empty, otherwise generate a stable UUID
-        String token = System.getenv("GOOGLE_HOME_TOKEN");
+        String token = GOOGLE_HOME_TOKEN;// System.getenv("GOOGLE_HOME_TOKEN");
         if (token == null || token.isBlank()) {
             token = UUID.randomUUID().toString();
             System.out.println("[GoogleHome] ⚠ GOOGLE_HOME_TOKEN not set — generated one-time token.");
@@ -43,8 +47,8 @@ public class GoogleHomeMain {
         }
 
         // OAuth client credentials — MUST match what you entered in Google Cloud console
-        String oauthClientId     = System.getenv("GOOGLE_OAUTH_CLIENT_ID");
-        String oauthClientSecret = System.getenv("GOOGLE_OAUTH_CLIENT_SECRET");
+        String oauthClientId     = GOOGLE_OAUTH_CLIENT_ID;//System.getenv("GOOGLE_OAUTH_CLIENT_ID");
+        String oauthClientSecret = GOOGLE_OAUTH_CLIENT_SECRET;//System.getenv("GOOGLE_OAUTH_CLIENT_SECRET");
         if (oauthClientId == null || oauthClientId.isBlank())     oauthClientId     = "home-lights";
         if (oauthClientSecret == null || oauthClientSecret.isBlank()) oauthClientSecret = "home-lights-secret";
 

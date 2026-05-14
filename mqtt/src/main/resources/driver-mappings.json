@@ -1,6 +1,7 @@
 {
   "mac_prefixes": {
     "10:5a:17": "BP5758D",
+    "38:1f:8d": "BP5758D",
     "38:2c:e5": "PWM"
   },
   "description": "MAC address prefix to LED driver type mappings",

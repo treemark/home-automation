@@ -22,7 +22,6 @@ public class OpenBekenCLI {
 
     private static final String DEFAULT_BROKER = "tcp://localhost:1883";
     private static final String DEFAULT_SUBNET = "192.168.86";
-    private static final String DEFAULT_DEVICES_JSON = "devices.json";
 
     private final OpenBekenDiscoveryService discoveryService;
     private MqttDiscoveryService mqttService;
@@ -156,12 +155,21 @@ public class OpenBekenCLI {
         var found = discoveryService.scanSubnet(sub, start, end, listener);
         System.out.printf("\n✓ Scan complete. Found %d OpenBeken device(s)\n", found.size());
         if (!found.isEmpty()) {
-            System.out.printf("  Cached %d device(s) to .openbeken-cache.json\n", discoveryService.getDiscoveredDevices().size());
+            String home = System.getProperty("user.home");
+            String cacheFile = home + "/.mqtt/openbeken-cache.json";
+            System.out.printf("  Cached %d device(s) to %s\n", discoveryService.getDiscoveredDevices().size(), cacheFile);
+            
+            // Sync to google-home-devices.json in ~/.mqtt/
+            String googleHomeJson = home + "/.mqtt/google-home-devices.json";
+            System.out.println("\n→ Syncing to " + googleHomeJson + "...");
+            discoveryService.syncToGoogleHomeDevices(googleHomeJson);
         }
     }
 
     private void cmdInventory(String[] parts) {
-        String path = parts.length > 1 ? parts[1] : DEFAULT_DEVICES_JSON;
+        String home = System.getProperty("user.home");
+        String defaultPath = home + "/.mqtt/openbeken-cache.json";
+        String path = parts.length > 1 ? parts[1] : defaultPath;
         System.out.println("\n→ Loading device inventory from " + path + "...");
         List<InventoryDevice> inventory = discoveryService.loadDeviceInventory(path);
         if (inventory.isEmpty()) {
@@ -235,6 +243,33 @@ public class OpenBekenCLI {
             System.out.println("Try: scan, inventory, probe <ip>, or mqtt-discover");
             return;
         }
+        
+        // Verify connectivity for devices with IPs
+        System.out.println("\n→ Verifying device connectivity...");
+        int verified = 0;
+        for (OpenBekenDevice d : all.values()) {
+            if (d.getIp() != null && !d.getIp().isEmpty()) {
+                OpenBekenDevice probed = discoveryService.probeDevice(d.getIp());
+                if (probed != null) {
+                    d.setOnline(true);
+                    // Update power state and dimmer from fresh probe
+                    if (probed.getPowerState() != null) {
+                        d.setPowerState(probed.getPowerState());
+                    }
+                    if (probed.getDimmer() != null) {
+                        d.setDimmer(probed.getDimmer());
+                    }
+                } else {
+                    d.setOnline(false);
+                }
+                verified++;
+            }
+        }
+        System.out.printf("  Verified %d device(s)\n", verified);
+        
+        // Save updated cache with online status
+        discoveryService.saveCache();
+        
         System.out.println("\n┌─────────────────────────────────────────────────────────────────────┐");
         System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-10s │%n",
                 "Device ID", "IP", "Online", "Power", "Method");
@@ -361,11 +396,15 @@ public class OpenBekenCLI {
         int ledUpdated = 0, ledAlready = 0, ledFail = 0;
         int pinsConfigured = 0, pinsAlready = 0, pinsFail = 0;
         int mapUpdated = 0, mapAlready = 0, mapFail = 0;
+        int restartSuccess = 0, restartFail = 0;
+        List<String> devicesToRestart = new ArrayList<>();
 
         for (OpenBekenDevice d : withIps) {
             String deviceIp = d.getIp();
             String deviceId = s(d.getDeviceId());
             System.out.printf("  %s (%s)\n", deviceId, deviceIp);
+
+            boolean needsRestart = false;
 
             // 1. Configure MQTT broker
             String clientId = "obk" + deviceIp.replace(".", "_");
@@ -375,6 +414,7 @@ public class OpenBekenCLI {
                 case "configured":
                     System.out.printf("    ✓ MQTT broker → %s:%d (configured)\n", brokerIp, mqttPort);
                     mqttConfigured++;
+                    needsRestart = true;
                     break;
                 case "already configured":
                     System.out.printf("    ✓ MQTT broker → %s:%d (already set)\n", brokerIp, mqttPort);
@@ -391,6 +431,7 @@ public class OpenBekenCLI {
             if (pinResult.startsWith("configured")) {
                 System.out.println("    ✓ GPIO pins — " + pinResult);
                 pinsConfigured++;
+                needsRestart = true;
             } else if (pinResult.startsWith("already configured")) {
                 System.out.println("    ✓ GPIO pins — " + pinResult);
                 pinsAlready++;
@@ -404,6 +445,7 @@ public class OpenBekenCLI {
             if (mapResult.startsWith("updated")) {
                 System.out.println("    ✓ Channel mapping — " + mapResult);
                 mapUpdated++;
+                needsRestart = true;
             } else if (mapResult.startsWith("already configured")) {
                 System.out.println("    ✓ Channel mapping — " + mapResult);
                 mapAlready++;
@@ -421,6 +463,7 @@ public class OpenBekenCLI {
                 case "updated":
                     System.out.println("    ✓ led_enableAll 1 — Updated");
                     ledUpdated++;
+                    needsRestart = true;
                     break;
                 case "already configured":
                     System.out.println("    ✓ led_enableAll 1 — Already set");
@@ -430,6 +473,20 @@ public class OpenBekenCLI {
                     System.out.printf("    ✗ led_enableAll FAILED (%s)\n", ledResult);
                     ledFail++;
                     break;
+            }
+
+            // 5. Restart device if changes were made
+            if (needsRestart) {
+                devicesToRestart.add(deviceIp);
+                System.out.println("    ⚡ Restarting device to apply changes...");
+                boolean restarted = discoveryService.restartDevice(deviceIp);
+                if (restarted) {
+                    System.out.println("    ✓ Restart command sent successfully");
+                    restartSuccess++;
+                } else {
+                    System.out.println("    ✗ Restart FAILED");
+                    restartFail++;
+                }
             }
         }
 
@@ -444,10 +501,16 @@ public class OpenBekenCLI {
                 pinsConfigured, pinsAlready, pinsFail);
         System.out.printf("║  BP5758D_Map:     %d updated, %d already OK, %d failed     \n",
                 mapUpdated, mapAlready, mapFail);
+        System.out.printf("║  Device restarts: %d succeeded, %d failed                  \n",
+                restartSuccess, restartFail);
         System.out.println("╚════════════════════════════════════════════════════════════╝");
 
-        if (mqttConfigured > 0 || pinsConfigured > 0 || mapUpdated > 0) {
-            System.out.println("\n⚠  Devices with new settings need a restart to apply changes.");
+        if (restartSuccess > 0) {
+            System.out.println("\n✓ Devices restarted successfully. Changes will take effect momentarily.");
+            System.out.println("  Devices may take 10-20 seconds to fully restart and reconnect.");
+        }
+        if (restartFail > 0) {
+            System.out.println("\n⚠  Some devices failed to restart. You may need to manually restart them:");
             System.out.println("   Toggle power or use: curl http://<device-ip>/index?restart=1");
         }
     }
