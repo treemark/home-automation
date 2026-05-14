@@ -401,13 +401,13 @@ public class OpenBekenCLI {
 
         for (OpenBekenDevice d : withIps) {
             String deviceIp = d.getIp();
-            String deviceId = s(d.getDeviceId());
+            String deviceId = d.getDeviceId();
             System.out.printf("  %s (%s)\n", deviceId, deviceIp);
 
             boolean needsRestart = false;
 
-            // 1. Configure MQTT broker
-            String clientId = "obk" + deviceIp.replace(".", "_");
+            // 1. Configure MQTT broker - use device ID instead of IP for MQTT topic
+            String clientId = deviceId != null ? deviceId : "obk" + deviceIp.replace(".", "_");
             String mqttResult = discoveryService.configureMqtt(
                     deviceIp, brokerIp, mqttPort, clientId, groupTopic);
             switch (mqttResult) {
@@ -690,8 +690,7 @@ public class OpenBekenCLI {
      * The cache is automatically loaded by OpenBekenDiscoveryService on startup.
      * Also includes any MQTT-discovered devices if connected.
      *
-     * Uses the mqttTopic field if available (IP-based topic from configure-all),
-     * otherwise derives from current IP, or falls back to deviceId.
+     * Prioritizes device IDs over IP-based topics since IPs can change.
      */
     private List<String> loadDiscoveredDeviceIds() {
         Map<String, OpenBekenDevice> all = new HashMap<>(discoveryService.getDiscoveredDevices());
@@ -701,24 +700,20 @@ public class OpenBekenCLI {
         List<String> ids = new ArrayList<>();
         for (OpenBekenDevice d : all.values()) {
             String mqttTopic = null;
-            String ip = d.getIp();
             
-            // Priority 1: Use saved mqttTopic if it matches current IP
-            if (d.getMqttTopic() != null && ip != null) {
-                String expectedTopic = "obk" + ip.replace(".", "_");
-                if (d.getMqttTopic().equals(expectedTopic)) {
-                    mqttTopic = d.getMqttTopic();
-                }
-            }
-            
-            // Priority 2: Derive from current IP
-            if (mqttTopic == null && ip != null && !ip.isEmpty()) {
-                mqttTopic = "obk" + ip.replace(".", "_");
-            }
-            
-            // Priority 3: Fall back to deviceId
-            if (mqttTopic == null && d.getDeviceId() != null) {
+            // Priority 1: Use the actual device ID (stable, doesn't change with IP)
+            if (d.getDeviceId() != null && !d.getDeviceId().isEmpty()) {
                 mqttTopic = d.getDeviceId();
+            }
+            
+            // Priority 2: Fall back to saved mqttTopic (for backward compatibility)
+            if (mqttTopic == null && d.getMqttTopic() != null) {
+                mqttTopic = d.getMqttTopic();
+            }
+            
+            // Priority 3: Last resort - derive from IP (will break when IP changes)
+            if (mqttTopic == null && d.getIp() != null && !d.getIp().isEmpty()) {
+                mqttTopic = "obk" + d.getIp().replace(".", "_");
             }
             
             if (mqttTopic != null) {
@@ -726,7 +721,7 @@ public class OpenBekenCLI {
                 System.out.printf("  📡 %s → MQTT: %s (%s)\n", 
                     d.getDeviceId() != null ? d.getDeviceId() : "?",
                     mqttTopic,
-                    ip != null ? ip : "N/A");
+                    d.getIp() != null ? d.getIp() : "N/A");
             }
         }
         return ids;

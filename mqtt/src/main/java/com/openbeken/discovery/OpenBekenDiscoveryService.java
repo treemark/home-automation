@@ -879,7 +879,7 @@ public class OpenBekenDiscoveryService {
      * @param deviceIp   the device's IP address
      * @param brokerHost the MQTT broker host/IP to point the device at
      * @param brokerPort the MQTT broker port (typically 1883)
-     * @param clientId   unique MQTT client topic/ID for this device
+     * @param clientId   unique MQTT client topic/ID for this device (should be device ID, not IP-based)
      * @param groupTopic the MQTT group topic (e.g. "openbeken")
      * @return "configured", "already configured", or an error description
      */
@@ -905,6 +905,18 @@ public class OpenBekenDiscoveryService {
         if (response == null) {
             return "failed";
         }
+        
+        // Update the device object in cache with the configured MQTT topic
+        OpenBekenDevice device = discoveredDevices.values().stream()
+                .filter(d -> deviceIp.equals(d.getIp()))
+                .findFirst()
+                .orElse(null);
+        if (device != null) {
+            device.setMqttTopic(clientId);
+            device.setMqttGroup(groupTopic);
+            saveCache();
+        }
+        
         return alreadyCorrect ? "already configured" : "configured";
     }
 
@@ -1072,15 +1084,28 @@ public class OpenBekenDiscoveryService {
             int updatedCount = 0;
             int newCount = 0;
             
-            // Update IPs for existing device IDs (preserve name/room)
+            // Update IPs and deviceIds for existing device IDs (preserve name/room)
             for (GoogleHomeDevice ghd : existingDevices.values()) {
                 OpenBekenDevice discovered = discoveredByShortId.get(ghd.getId());
                 if (discovered != null) {
+                    boolean updated = false;
+                    
                     // Update IP if it changed
                     if (!discovered.getIp().equals(ghd.getIp())) {
                         ghd.setIp(discovered.getIp());
+                        updated = true;
+                    }
+                    
+                    // Update or set deviceId (stable across IP changes)
+                    if (discovered.getDeviceId() != null && !discovered.getDeviceId().equals(ghd.getDeviceId())) {
+                        ghd.setDeviceId(discovered.getDeviceId());
+                        updated = true;
+                    }
+                    
+                    if (updated) {
                         updatedCount++;
                     }
+                    
                     // Remove from map so we don't add it as new
                     discoveredByShortId.remove(ghd.getId());
                 }

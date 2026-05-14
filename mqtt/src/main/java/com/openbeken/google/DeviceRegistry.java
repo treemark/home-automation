@@ -85,14 +85,15 @@ public class DeviceRegistry {
         // Parse lights - convert GoogleHomeDevice to GoogleDevice
         for (GoogleHomeDevice ghd : config.getDevices()) {
             String ip = (ghd.getIp() != null) ? ghd.getIp() : "";
-            GoogleDevice device = new GoogleDevice(ghd.getId(), ghd.getName(), ghd.getRoom(), ip);
+            String deviceId = ghd.getDeviceId();  // OpenBeken device ID (stable across IP changes)
+            GoogleDevice device = GoogleDevice.light(ghd.getId(), ghd.getName(), ghd.getRoom(), ip, deviceId);
             devices.add(device);
             byId.put(ghd.getId(), device);
         }
 
         // Parse scenes - convert GoogleHomeScene to GoogleDevice
         for (GoogleHomeScene ghs : config.getScenes()) {
-            GoogleDevice scene = new GoogleDevice(ghs.getId(), ghs.getName(), ghs.getRoom(), 
+            GoogleDevice scene = GoogleDevice.scene(ghs.getId(), ghs.getName(), ghs.getRoom(),
                     ghs.getAnimation(), ghs.getGroup());
             devices.add(scene);
             byId.put(ghs.getId(), scene);

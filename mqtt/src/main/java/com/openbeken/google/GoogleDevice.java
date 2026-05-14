@@ -3,6 +3,10 @@ package com.openbeken.google;
 /**
  * Represents a single device or scene for the Google Smart Home fulfillment API.
  * Loaded from google-home-devices.json.
+ * 
+ * Use static factory methods to construct instances:
+ *   GoogleDevice.light(id, name, room, ip, deviceId)
+ *   GoogleDevice.scene(id, name, room, animation, group)
  */
 public class GoogleDevice {
 
@@ -12,43 +16,62 @@ public class GoogleDevice {
     private final String name;
     private final String room;
     private final String ip;           // null/empty if not yet flashed
-    private final String mqttTopic;    // derived: obk{ip_underscored}
+    private final String deviceId;     // OpenBeken device ID (e.g., obk17811957) - stable, doesn't change with IP
+    private final String mqttTopic;    // derived from deviceId if available, else from IP (legacy)
     private final Type type;
 
     // For scenes only
     private final String animation;    // "rainbow", "warm", "cool"
     private final String group;        // MQTT group or comma-separated device IDs
 
-    /** Constructor for LIGHT devices */
-    public GoogleDevice(String id, String name, String room, String ip) {
+    /** Private constructor — use static factory methods */
+    private GoogleDevice(String id, String name, String room, Type type,
+                         String ip, String deviceId,
+                         String animation, String group) {
         this.id = id;
         this.name = name;
         this.room = room;
+        this.type = type;
         this.ip = ip;
-        this.type = Type.LIGHT;
-        this.animation = null;
-        this.group = null;
-        this.mqttTopic = (ip != null && !ip.isBlank())
-                ? "obk" + ip.replace('.', '_')
-                : null;
-    }
-
-    /** Constructor for SCENE devices */
-    public GoogleDevice(String id, String name, String room, String animation, String group) {
-        this.id = id;
-        this.name = name;
-        this.room = room;
-        this.ip = null;
-        this.type = Type.SCENE;
+        this.deviceId = deviceId;
         this.animation = animation;
         this.group = group;
-        this.mqttTopic = null;
+
+        if (type == Type.LIGHT) {
+            // Priority 1: Use deviceId if available (stable, doesn't change with IP)
+            // Priority 2: Fall back to IP-based topic (legacy, breaks when IP changes)
+            if (deviceId != null && !deviceId.isBlank()) {
+                this.mqttTopic = deviceId;
+            } else if (ip != null && !ip.isBlank()) {
+                this.mqttTopic = "obk" + ip.replace('.', '_');
+            } else {
+                this.mqttTopic = null;
+            }
+        } else {
+            this.mqttTopic = null;
+        }
+    }
+
+    /** Factory method for LIGHT devices with device ID (stable MQTT topic) */
+    public static GoogleDevice light(String id, String name, String room, String ip, String deviceId) {
+        return new GoogleDevice(id, name, room, Type.LIGHT, ip, deviceId, null, null);
+    }
+
+    /** Factory method for LIGHT devices (backward compatibility — topic falls back to IP) */
+    public static GoogleDevice light(String id, String name, String room, String ip) {
+        return new GoogleDevice(id, name, room, Type.LIGHT, ip, null, null, null);
+    }
+
+    /** Factory method for SCENE devices */
+    public static GoogleDevice scene(String id, String name, String room, String animation, String group) {
+        return new GoogleDevice(id, name, room, Type.SCENE, null, null, animation, group);
     }
 
     public String getId()         { return id; }
     public String getName()       { return name; }
     public String getRoom()       { return room; }
     public String getIp()         { return ip; }
+    public String getDeviceId()   { return deviceId; }
     public String getMqttTopic()  { return mqttTopic; }
     public Type getType()         { return type; }
     public String getAnimation()  { return animation; }

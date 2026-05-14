@@ -19,6 +19,9 @@ public class GoogleHomeDevice {
     @JsonProperty("ip")
     private String ip;
     
+    @JsonProperty("deviceId")
+    private String deviceId;  // OpenBeken device ID (e.g., obk17811957) - stable, doesn't change with IP
+    
     public GoogleHomeDevice() {
     }
     
@@ -27,6 +30,14 @@ public class GoogleHomeDevice {
         this.name = name;
         this.room = room;
         this.ip = ip;
+    }
+    
+    public GoogleHomeDevice(String id, String name, String room, String ip, String deviceId) {
+        this.id = id;
+        this.name = name;
+        this.room = room;
+        this.ip = ip;
+        this.deviceId = deviceId;
     }
     
     public String getId() {
@@ -61,9 +72,17 @@ public class GoogleHomeDevice {
         this.ip = ip;
     }
     
+    public String getDeviceId() {
+        return deviceId;
+    }
+    
+    public void setDeviceId(String deviceId) {
+        this.deviceId = deviceId;
+    }
+    
     @Override
     public String toString() {
-        return String.format("GoogleHomeDevice{id='%s', name='%s', room='%s', ip='%s'}", 
-                id, name, room, ip);
+        return String.format("GoogleHomeDevice{id='%s', name='%s', room='%s', ip='%s', deviceId='%s'}", 
+                id, name, room, ip, deviceId);
     }
 }
