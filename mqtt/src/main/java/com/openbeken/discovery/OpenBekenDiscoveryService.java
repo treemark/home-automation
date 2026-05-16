@@ -1124,7 +1124,7 @@ public class OpenBekenDiscoveryService {
                     suffix++;
                 }
                 
-                GoogleHomeDevice newDevice = new GoogleHomeDevice(finalId, "Light " + shortId, "Uncategorized", device.getIp());
+                GoogleHomeDevice newDevice = new GoogleHomeDevice(finalId, "Light " + shortId, "Uncategorized", device.getIp(), device.getDeviceId());
                 existingDevices.put(finalId, newDevice);
                 newCount++;
             }

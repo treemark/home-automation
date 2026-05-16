@@ -513,6 +513,13 @@ public class OpenBekenCLI {
             System.out.println("\n⚠  Some devices failed to restart. You may need to manually restart them:");
             System.out.println("   Toggle power or use: curl http://<device-ip>/index?restart=1");
         }
+
+        // Re-sync google-home-devices.json so device IDs are written as MQTT topics
+        String home = System.getProperty("user.home");
+        String googleHomeJson = home + "/.mqtt/google-home-devices.json";
+        System.out.println("\n→ Syncing device IDs to " + googleHomeJson + "...");
+        discoveryService.syncToGoogleHomeDevices(googleHomeJson);
+        System.out.println("  Google Home device registry updated with stable device ID topics.");
     }
 
     /**
