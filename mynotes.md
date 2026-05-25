@@ -38,6 +38,7 @@ nmcli -f IP4.GATEWAY con show "SmartLife-1957"
 
 For recessed downlights
 
+
 [?] How do you want to choose the device?: From device-profiles (i.e. custom profile)
 By manufacturer/device name
 By firmware version and name
