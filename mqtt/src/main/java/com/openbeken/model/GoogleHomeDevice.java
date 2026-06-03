@@ -2,6 +2,8 @@ package com.openbeken.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
+
 /**
  * Represents a Google Home device (light) in google-home-devices.json.
  */
@@ -21,6 +23,10 @@ public class GoogleHomeDevice {
     
     @JsonProperty("deviceId")
     private String deviceId;  // OpenBeken device ID (e.g., obk17811957) - stable, doesn't change with IP
+    
+    // For Pixelblaze devices - list of patterns/programs
+    @JsonProperty("programs")
+    private List<PixelblazeProgram> programs;
     
     public GoogleHomeDevice() {
     }
@@ -78,6 +84,14 @@ public class GoogleHomeDevice {
     
     public void setDeviceId(String deviceId) {
         this.deviceId = deviceId;
+    }
+    
+    public List<PixelblazeProgram> getPrograms() {
+        return programs;
+    }
+    
+    public void setPrograms(List<PixelblazeProgram> programs) {
+        this.programs = programs;
     }
     
     @Override

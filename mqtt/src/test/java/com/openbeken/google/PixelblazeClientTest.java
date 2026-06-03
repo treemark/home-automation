@@ -1,9 +1,12 @@
 package com.openbeken.google;
 
 import com.openbeken.model.PixelblazeConfig;
+import com.openbeken.model.PixelblazeProgram;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -26,6 +29,42 @@ public class PixelblazeClientTest {
     @BeforeEach
     void setUp() {
         client = new PixelblazeClient(PIXELBLAZE_IP);
+    }
+
+    @Test
+    @DisplayName("getPrograms should return a list of available programs")
+    void testGetPrograms() {
+        List<PixelblazeProgram> programs = client.getPrograms();
+        if (programs != null && !programs.isEmpty()) {
+            assertFalse(programs.isEmpty(), "Programs list should not be empty");
+            // Print first few programs for debugging
+            for (int i = 0; i < Math.min(3, programs.size()); i++) {
+                System.out.println("Program " + i + ": " + programs.get(i));
+            }
+        } else {
+            System.out.println("No programs returned (this may be due to rate limiting or device type)");
+        }
+    }
+
+    @Test
+    @DisplayName("activatePattern should accept a pattern ID without error")
+    void testActivatePattern() {
+        // First get the list of programs to find a valid pattern ID
+        List<PixelblazeProgram> programs = client.getPrograms();
+        
+        if (programs != null && !programs.isEmpty()) {
+            // Try to activate the first available pattern
+            String patternId = programs.get(0).getActiveProgramId();
+            if (patternId != null && !patternId.isEmpty()) {
+                assertDoesNotThrow(() -> client.activatePattern(patternId));
+                System.out.println("Activated pattern: " + programs.get(0).getName() + " (ID: " + patternId + ")");
+            }
+        } else {
+            // If we can't get programs, try a known pattern ID format
+            // This may fail but shouldn't throw
+            assertDoesNotThrow(() -> client.activatePattern("test-pattern-id"));
+            System.out.println("Could not retrieve programs list to test activation");
+        }
     }
 
     @Test

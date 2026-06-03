@@ -103,7 +103,7 @@ public class DeviceRegistry {
         if (config.getPixelblazes() != null) {
             for (GoogleHomeDevice ghd : config.getPixelblazes()) {
                 String ip = (ghd.getIp() != null) ? ghd.getIp() : "";
-                GoogleDevice pixelblaze = GoogleDevice.pixelblaze(ghd.getId(), ghd.getName(), ghd.getRoom(), ip);
+                GoogleDevice pixelblaze = GoogleDevice.pixelblaze(ghd.getId(), ghd.getName(), ghd.getRoom(), ip, ghd.getPrograms());
                 devices.add(pixelblaze);
                 byId.put(ghd.getId(), pixelblaze);
             }

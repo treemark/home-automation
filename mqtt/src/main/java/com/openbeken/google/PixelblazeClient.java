@@ -65,7 +65,7 @@ public class PixelblazeClient {
      */
     public PixelblazeConfig getConfiguration() {
         try {
-            String json = sendAndWaitForResponse("{\"getConfig\":true}", 5);
+            String json = sendAndWaitForResponse("{\"getConfig\":true}", 5, "name");
             log.debug("[Pixelblaze:{}] Raw config response: {}", ip, json);
             if (json != null && !json.isEmpty()) {
                 // Pixelblaze may return multiple concatenated JSON objects
@@ -148,6 +148,90 @@ public class PixelblazeClient {
         send("{\"listPrograms\":true}");
     }
 
+    /**
+     * Get the list of available patterns/programs from the Pixelblaze.
+     * Sends listPrograms and parses the binary frame response.
+     *
+     * Protocol (per Pixelblaze WebSocket API docs):
+     *   byte 0:   0x07 (program list frame type)
+     *   byte 1:   flags — 0x01 = start, 0x04 = end, 0x05 = single frame (start+end)
+     *   byte 2..n: tab-separated "id\tname\n" entries, one per line
+     *
+     * The list may be split across multiple binary frames; we concatenate payloads
+     * until the end flag (0x04) is set.
+     *
+     * @return list of programs, or null if unavailable
+     */
+    public java.util.List<com.openbeken.model.PixelblazeProgram> getPrograms() {
+        java.util.List<com.openbeken.model.PixelblazeProgram> programs = new java.util.ArrayList<>();
+        StringBuilder payload = new StringBuilder();
+        CountDownLatch latch = new CountDownLatch(1);
+
+        try {
+            WebSocketClient ws = new WebSocketClient(uri) {
+                @Override
+                public void onOpen(ServerHandshake handshake) {
+                    send("{\"listPrograms\":true}");
+                }
+
+                @Override
+                public void onMessage(java.nio.ByteBuffer bytes) {
+                    if (bytes.remaining() < 2) return;
+
+                    byte frameType = bytes.get();
+                    byte flags     = bytes.get();
+
+                    if (frameType == 0x07) {
+                        // Decode the TSV payload from this frame and append to buffer
+                        byte[] data = new byte[bytes.remaining()];
+                        bytes.get(data);
+                        payload.append(new String(data, java.nio.charset.StandardCharsets.UTF_8));
+
+                        // End flag set — we have the full list
+                        if ((flags & 0x04) != 0) {
+                            latch.countDown();
+                            close();
+                        }
+                    }
+                }
+
+                @Override public void onMessage(String message) { /* ignore text/stats frames */ }
+                @Override public void onClose(int code, String reason, boolean remote) { latch.countDown(); }
+                @Override public void onError(Exception e) {
+                    log.warn("[Pixelblaze:{}] WS error: {}", ip, e.getMessage());
+                    latch.countDown();
+                }
+            };
+
+            ws.connectBlocking(5, TimeUnit.SECONDS);
+            latch.await(5, TimeUnit.SECONDS);
+            ws.close();
+
+            // Parse the concatenated TSV: "id\tname\n" per line
+            for (String line : payload.toString().split("\n")) {
+                String[] parts = line.split("\t", 2);
+                if (parts.length == 2) {
+                    String id   = parts[0].trim();
+                    String name = parts[1].trim();
+                    if (!id.isEmpty()) {
+                        com.openbeken.model.PixelblazeProgram prog =
+                            new com.openbeken.model.PixelblazeProgram();
+                        prog.setActiveProgramId(id);
+                        prog.setName(name);
+                        programs.add(prog);
+                    }
+                }
+            }
+
+            log.info("[Pixelblaze:{}] Found {} programs", ip, programs.size());
+            return programs.isEmpty() ? null : programs;
+
+        } catch (Exception e) {
+            log.warn("[Pixelblaze:{}] Failed to get programs: {}", ip, e.getMessage());
+        }
+        return null;
+    }
+
     // ── WebSocket send (connect → send → close) ───────────────────────────
 
     /**
@@ -199,9 +283,31 @@ public class PixelblazeClient {
      * @param timeoutSeconds max seconds to wait for response
      * @return response string, or null if timeout/error
      */
-    private String sendAndWaitForResponse(String json, int timeoutSeconds) {
-        StringBuilder response = new StringBuilder();
+    /**
+     * Send a JSON frame and wait for a response that contains a complete, valid JSON object
+     * matching the given responseKey.
+     *
+     * Pixelblaze streams periodic stats frames (fps, mem, uptime, etc.) as soon as a WebSocket
+     * connection opens. The actual response to a command (e.g. listPrograms, getConfig) arrives
+     * somewhere in that stream, sandwiched between stats frames.
+     *
+     * Strategy:
+     *   - Buffer all incoming text across messages (Pixelblaze may split or concat frames)
+     *   - After each message, scan the buffer for complete JSON objects (brace-balanced)
+     *   - As soon as we find one that contains the responseKey, close the connection and return it
+     *   - If the timeout elapses first, close and return null
+     *
+     * @param json           the JSON frame to send
+     * @param timeoutSeconds max seconds to wait for the expected response
+     * @param responseKey    the JSON key we're waiting for (e.g. "listPrograms", "config")
+     * @return the first complete JSON object containing responseKey, or null on timeout/error
+     */
+    private String sendAndWaitForResponse(String json, int timeoutSeconds, String responseKey) {
+        StringBuilder buffer = new StringBuilder();
         CountDownLatch latch = new CountDownLatch(1);
+        // Holds the matched JSON object once found
+        java.util.concurrent.atomic.AtomicReference<String> result =
+            new java.util.concurrent.atomic.AtomicReference<>(null);
 
         try {
             WebSocketClient ws = new WebSocketClient(uri) {
@@ -212,12 +318,19 @@ public class PixelblazeClient {
 
                 @Override
                 public void onMessage(String message) {
-                    response.append(message);
+                    buffer.append(message);
+                    // Scan buffer for complete JSON objects and check each for responseKey
+                    String found = extractJsonContaining(buffer.toString(), responseKey);
+                    if (found != null) {
+                        result.set(found);
+                        latch.countDown();
+                        close(); // done — stop streaming
+                    }
                 }
 
                 @Override
                 public void onClose(int code, String reason, boolean remote) {
-                    latch.countDown();
+                    latch.countDown(); // unblock await in case of unexpected close
                 }
 
                 @Override
@@ -228,19 +341,101 @@ public class PixelblazeClient {
             };
 
             ws.connectBlocking(timeoutSeconds, TimeUnit.SECONDS);
-            boolean waited = latch.await(timeoutSeconds, TimeUnit.SECONDS);
-
-            if (response.length() > 0) {
-                ws.close();
-                return response.toString();
-            }
-
+            latch.await(timeoutSeconds, TimeUnit.SECONDS);
             ws.close();
-            return null;
+
+            return result.get(); // null if timed out without finding responseKey
 
         } catch (Exception e) {
             log.warn("[Pixelblaze:{}] sendAndWait failed: {}", ip, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Overload that preserves backward-compatible call sites which don't specify a responseKey.
+     * Returns the first complete JSON object found in any response message.
+     */
+    private String sendAndWaitForResponse(String json, int timeoutSeconds) {
+        return sendAndWaitForResponse(json, timeoutSeconds, null);
+    }
+
+    /**
+     * Scans a raw buffer of potentially concatenated JSON objects and returns the first
+     * complete, brace-balanced JSON object that contains the given key as a top-level field.
+     *
+     * If key is null, returns the first complete JSON object regardless of content.
+     *
+     * Pixelblaze concatenates JSON frames without delimiters, e.g.:
+     *   {"fps":29.5,...}{"listPrograms":[...]}{"fps":30.1,...}
+     * This method finds each object by tracking brace depth and scanning char-by-char.
+     *
+     * @param buffer raw accumulated text from the WebSocket
+     * @param key    top-level JSON key to look for, or null to return any complete object
+     * @return matching JSON object string, or null if not yet found
+     */
+    private String extractJsonContaining(String buffer, String key) {
+        int i = 0;
+        int len = buffer.length();
+        while (i < len) {
+            // Find start of next JSON object
+            int start = buffer.indexOf('{', i);
+            if (start < 0) break;
+
+            // Walk forward tracking brace depth to find the matching close brace
+            int depth = 0;
+            boolean inString = false;
+            boolean escape = false;
+            int end = -1;
+
+            for (int j = start; j < len; j++) {
+                char c = buffer.charAt(j);
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                if (c == '\\' && inString) {
+                    escape = true;
+                    continue;
+                }
+                if (c == '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (inString) continue;
+
+                if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        end = j;
+                        break;
+                    }
+                }
+            }
+
+            if (end < 0) break; // incomplete object — wait for more data
+
+            String candidate = buffer.substring(start, end + 1);
+
+            // If no key filter, return the first complete object
+            if (key == null) return candidate;
+
+            // Quick substring check before attempting a full parse
+            if (candidate.contains("\"" + key + "\"")) {
+                try {
+                    com.fasterxml.jackson.databind.JsonNode node =
+                        JsonUtil.getObjectMapper().readTree(candidate);
+                    if (node.isObject() && node.has(key)) {
+                        return candidate;
+                    }
+                } catch (Exception ignored) {
+                    // Malformed — skip this candidate and keep scanning
+                }
+            }
+
+            i = end + 1; // advance past this object and look at the next
+        }
+        return null; // not found yet
     }
 }

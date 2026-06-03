@@ -7,6 +7,8 @@ import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 
+import com.openbeken.model.PixelblazeProgram;
+
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -104,6 +106,12 @@ public class FulfillmentHandler implements HttpHandler {
             traits.add("action.devices.traits.OnOff");
             traits.add("action.devices.traits.Brightness");
             traits.add("action.devices.traits.ColorSetting");
+            
+            // Add Modes trait only if programs are configured
+            if (!pb.getPrograms().isEmpty()) {
+                traits.add("action.devices.traits.Modes");
+            }
+            
             dev.add("traits", traits);
             JsonObject name = new JsonObject();
             name.addProperty("name", pb.getName());
@@ -112,6 +120,45 @@ public class FulfillmentHandler implements HttpHandler {
             dev.addProperty("roomHint", pb.getRoom());
             JsonObject attrs = new JsonObject();
             attrs.addProperty("colorModel", "hsv");
+            
+            // Add Modes attributes if programs are configured
+            if (!pb.getPrograms().isEmpty()) {
+                JsonObject modesDef = new JsonObject();
+                modesDef.addProperty("name", "pattern");
+                
+                JsonArray nameValues = new JsonArray();
+                JsonObject nameVal = new JsonObject();
+                JsonArray synonyms = new JsonArray();
+                synonyms.add("pattern");
+                synonyms.add("animation");
+                nameVal.add("name_synonym", synonyms);
+                nameVal.addProperty("lang", "en");
+                nameValues.add(nameVal);
+                modesDef.add("name_values", nameValues);
+                modesDef.addProperty("ordered", false);
+                
+                // One setting per PixelblazeProgram
+                JsonArray settings = new JsonArray();
+                for (PixelblazeProgram prog : pb.getPrograms()) {
+                    JsonObject setting = new JsonObject();
+                    setting.addProperty("setting_name", prog.getName());
+                    JsonArray settingValues = new JsonArray();
+                    JsonObject sv = new JsonObject();
+                    JsonArray settingSynonyms = new JsonArray();
+                    settingSynonyms.add(prog.getName());
+                    sv.add("setting_synonym", settingSynonyms);
+                    sv.addProperty("lang", "en");
+                    settingValues.add(sv);
+                    setting.add("setting_values", settingValues);
+                    settings.add(setting);
+                }
+                modesDef.add("settings", settings);
+                
+                JsonArray availableModes = new JsonArray();
+                availableModes.add(modesDef);
+                attrs.add("availableModes", availableModes);
+            }
+            
             dev.add("attributes", attrs);
             deviceArr.add(dev);
         }
@@ -274,6 +321,24 @@ public class FulfillmentHandler implements HttpHandler {
                         client.setBrightness(v);
                     }
                     System.out.println("[Fulfillment] Pixelblaze " + dev.getId() + " color=HSV(" + h + "," + s + "," + v + ")");
+                }
+                case "action.devices.commands.SetModes" -> {
+                    JsonObject modeSettings = params.getAsJsonObject("updateModeSettings");
+                    String requestedPattern = modeSettings.get("pattern").getAsString();
+
+                    dev.getPrograms().stream()
+                        .filter(p -> p.getName().equalsIgnoreCase(requestedPattern))
+                        .findFirst()
+                        .ifPresentOrElse(
+                            prog -> {
+                                client.activatePattern(prog.getActiveProgramId());
+                                updateState(dev.getId(), "pattern", prog.getName());
+                                System.out.printf("[Fulfillment] Pixelblaze %s → pattern '%s' (%s)%n",
+                                    dev.getId(), prog.getName(), prog.getActiveProgramId());
+                            },
+                            () -> System.err.printf("[Fulfillment] Unknown pattern '%s' on %s%n",
+                                requestedPattern, dev.getId())
+                        );
                 }
                 default -> {
                     System.out.println("[Fulfillment] Unhandled Pixelblaze command: " + command);

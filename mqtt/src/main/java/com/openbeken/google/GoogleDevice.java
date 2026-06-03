@@ -1,5 +1,10 @@
 package com.openbeken.google;
 
+import com.openbeken.model.PixelblazeProgram;
+
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Represents a single device or scene for the Google Smart Home fulfillment API.
  * Loaded from google-home-devices.json.
@@ -23,8 +28,11 @@ public class GoogleDevice {
     // For scenes only
     private final String animation;    // "rainbow", "warm", "cool"
     private final String group;        // MQTT group or comma-separated device IDs
+    
+    // For Pixelblaze devices
+    private final List<PixelblazeProgram> programs;  // Available patterns/programs
 
-    /** Private constructor — use static factory methods */
+    /** Private constructor for lights and scenes — use static factory methods */
     private GoogleDevice(String id, String name, String room, Type type,
                          String ip, String deviceId,
                          String animation, String group) {
@@ -36,6 +44,36 @@ public class GoogleDevice {
         this.deviceId = deviceId;
         this.animation = animation;
         this.group = group;
+        this.programs = Collections.emptyList();
+        
+        // Initialize mqttTopic for LIGHT type (same logic as second constructor)
+        if (type == Type.LIGHT) {
+            if (deviceId != null && !deviceId.isBlank()) {
+                this.mqttTopic = deviceId;
+            } else if (ip != null && !ip.isBlank()) {
+                this.mqttTopic = "obk" + ip.replace('.', '_');
+            } else {
+                this.mqttTopic = null;
+            }
+        } else {
+            this.mqttTopic = null;
+        }
+    }
+
+    /** Private constructor for Pixelblaze devices — includes programs */
+    private GoogleDevice(String id, String name, String room, Type type,
+                         String ip, String deviceId,
+                         String animation, String group,
+                         List<PixelblazeProgram> programs) {
+        this.id = id;
+        this.name = name;
+        this.room = room;
+        this.type = type;
+        this.ip = ip;
+        this.deviceId = deviceId;
+        this.animation = animation;
+        this.group = group;
+        this.programs = programs != null ? programs : Collections.emptyList();
 
         if (type == Type.LIGHT) {
             // Priority 1: Use deviceId if available (stable, doesn't change with IP)
@@ -68,7 +106,12 @@ public class GoogleDevice {
     }
 
     public static GoogleDevice pixelblaze(String id, String name, String room, String ip) {
-        return new GoogleDevice(id, name, room, Type.PIXELBLAZE, ip, null, null, null);
+        return new GoogleDevice(id, name, room, Type.PIXELBLAZE, ip, null, null, null, null);
+    }
+
+    /** Factory method for Pixelblaze devices with programs list */
+    public static GoogleDevice pixelblaze(String id, String name, String room, String ip, List<PixelblazeProgram> programs) {
+        return new GoogleDevice(id, name, room, Type.PIXELBLAZE, ip, null, null, null, programs);
     }
 
     public String getId()         { return id; }
@@ -80,6 +123,11 @@ public class GoogleDevice {
     public Type getType()         { return type; }
     public String getAnimation()  { return animation; }
     public String getGroup()      { return group; }
+    
+    /** Get programs/patterns for Pixelblaze devices. Returns empty list for non-Pixelblaze devices. */
+    public List<PixelblazeProgram> getPrograms() {
+        return programs;
+    }
 
     /** True if this LIGHT device has a confirmed MQTT topic (i.e. is flashed). */
     public boolean isFlashed() {
