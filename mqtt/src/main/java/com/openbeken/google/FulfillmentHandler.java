@@ -95,6 +95,26 @@ public class FulfillmentHandler implements HttpHandler {
             dev.add("attributes", attrs);
             deviceArr.add(dev);
         }
+        // Pixelblaze devices
+        for (GoogleDevice pb : registry.getPixelblazes()) {
+            JsonObject dev = new JsonObject();
+            dev.addProperty("id", pb.getId());
+            dev.addProperty("type", "action.devices.types.LIGHT");
+            JsonArray traits = new JsonArray();
+            traits.add("action.devices.traits.OnOff");
+            traits.add("action.devices.traits.Brightness");
+            traits.add("action.devices.traits.ColorSetting");
+            dev.add("traits", traits);
+            JsonObject name = new JsonObject();
+            name.addProperty("name", pb.getName());
+            dev.add("name", name);
+            dev.addProperty("willReportState", false);
+            dev.addProperty("roomHint", pb.getRoom());
+            JsonObject attrs = new JsonObject();
+            attrs.addProperty("colorModel", "hsv");
+            dev.add("attributes", attrs);
+            deviceArr.add(dev);
+        }
         // Scenes
         for (GoogleDevice s : registry.getScenes()) {
             JsonObject dev = new JsonObject();
@@ -179,6 +199,13 @@ public class FulfillmentHandler implements HttpHandler {
                 sceneExecutor.activate(dev.getAnimation(), dev.getGroup());
                 return true;
             }
+            
+            // Handle Pixelblaze devices via WebSocket
+            if (dev.getType() == GoogleDevice.Type.PIXELBLAZE) {
+                return handlePixelblazeCommand(dev, command, params);
+            }
+            
+            // Handle OpenBeken lights via MQTT
             if (!dev.isFlashed()) { System.err.println("[Fulfillment] Device not flashed: " + devId); return false; }
             String topic = dev.getMqttTopic();
 
@@ -208,6 +235,57 @@ public class FulfillmentHandler implements HttpHandler {
             return false;
         }
     }
+    
+    /**
+     * Handle Pixelblaze commands via WebSocket.
+     * Pixelblaze uses WebSocket on port 81 instead of MQTT.
+     */
+    private boolean handlePixelblazeCommand(GoogleDevice dev, String command, JsonObject params) {
+        String ip = dev.getIp();
+        if (ip == null || ip.isEmpty()) {
+            System.err.println("[Fulfillment] Pixelblaze has no IP: " + dev.getId());
+            return false;
+        }
+        
+        try {
+            PixelblazeClient client = new PixelblazeClient(ip);
+            
+            switch (command) {
+                case "action.devices.commands.OnOff" -> {
+                    boolean on = params.get("on").getAsBoolean();
+                    client.setOn(on);
+                    updateState(dev.getId(), "on", on);
+                    System.out.println("[Fulfillment] Pixelblaze " + dev.getId() + " setOn=" + on);
+                }
+                case "action.devices.commands.BrightnessAbsolute" -> {
+                    int bri = params.get("brightness").getAsInt();
+                    client.setBrightness(bri);
+                    updateState(dev.getId(), "brightness", bri);
+                    System.out.println("[Fulfillment] Pixelblaze " + dev.getId() + " brightness=" + bri);
+                }
+                case "action.devices.commands.ColorAbsolute" -> {
+                    JsonObject hsv = params.getAsJsonObject("color").getAsJsonObject("spectrumHSV");
+                    int h = (int) hsv.get("hue").getAsDouble();
+                    int s = (int) (hsv.get("saturation").getAsDouble() * 100);
+                    int v = (int) (hsv.get("value").getAsDouble() * 100);
+                    client.setColor(h, s, v);
+                    // Also set brightness if value < 100
+                    if (v < 100) {
+                        client.setBrightness(v);
+                    }
+                    System.out.println("[Fulfillment] Pixelblaze " + dev.getId() + " color=HSV(" + h + "," + s + "," + v + ")");
+                }
+                default -> {
+                    System.out.println("[Fulfillment] Unhandled Pixelblaze command: " + command);
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            System.err.println("[Fulfillment] Error controlling Pixelblaze " + dev.getId() + ": " + e.getMessage());
+            return false;
+        }
+    }
 
     private void pub(String topic, String payload) throws MqttException {
         if (mqtt == null || !mqtt.isConnected()) return;
@@ -218,10 +296,13 @@ public class FulfillmentHandler implements HttpHandler {
     }
 
     private JsonObject defaultState(String devId) {
+        GoogleDevice dev = registry.findById(devId);
+        boolean isOnline = dev != null && dev.getIp() != null && !dev.getIp().isEmpty();
+        
         JsonObject s = new JsonObject();
         s.addProperty("on", false);   // default OFF — avoids "all on" confusion after server restart
         s.addProperty("brightness", 100);
-        s.addProperty("online", registry.findById(devId) != null && registry.findById(devId).isFlashed());
+        s.addProperty("online", isOnline);
         return s;
     }
 

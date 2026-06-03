@@ -98,6 +98,16 @@ public class DeviceRegistry {
             devices.add(scene);
             byId.put(ghs.getId(), scene);
         }
+
+        // Parse pixelblazes - convert GoogleHomeDevice to GoogleDevice (PIXELBLAZE type)
+        if (config.getPixelblazes() != null) {
+            for (GoogleHomeDevice ghd : config.getPixelblazes()) {
+                String ip = (ghd.getIp() != null) ? ghd.getIp() : "";
+                GoogleDevice pixelblaze = GoogleDevice.pixelblaze(ghd.getId(), ghd.getName(), ghd.getRoom(), ip);
+                devices.add(pixelblaze);
+                byId.put(ghd.getId(), pixelblaze);
+            }
+        }
     }
 
     /** All devices (lights + scenes). */
@@ -116,6 +126,13 @@ public class DeviceRegistry {
     public List<GoogleDevice> getScenes() {
         return devices.stream()
                 .filter(d -> d.getType() == GoogleDevice.Type.SCENE)
+                .toList();
+    }
+
+    /** Only PIXELBLAZE devices. */
+    public List<GoogleDevice> getPixelblazes() {
+        return devices.stream()
+                .filter(d -> d.getType() == GoogleDevice.Type.PIXELBLAZE)
                 .toList();
     }
 
