@@ -160,13 +160,18 @@ Once linked, you can say:
 
 As you flash more bulbs with OpenBeken:
 
-1. Edit `mqtt/src/main/resources/google-home-devices.json`
+1. Edit `~/.mqtt/google-home-devices.json` (see note below)
 2. Add the device with its IP and room:
    ```json
    { "id": "K5", "name": "Kitchen Panel 5", "room": "Kitchen", "ip": "192.168.86.XX" }
    ```
 3. Restart the server: `./gradlew :mqtt:googleHome`
 4. In Google Home app: **Settings → Home → [your home] → More → Manage → Re-sync**
+
+> **Config file location**: `GoogleHomeMain` reads device config from
+> **`~/.mqtt/google-home-devices.json`** at startup. This is the live, authoritative copy.
+> The file previously at `mqtt/src/main/resources/google-home-devices.json` is no longer
+> used and has been removed from the repo. Edit only the `~/.mqtt/` copy.
 
 ---
 
@@ -236,9 +241,9 @@ curl -X POST "https://YOUR-NGROK-URL/token" \
 | "Something went wrong" on link | See Diagnostics section above; most likely empty/mismatched token |
 | Google says "device unavailable" | Check server is running & ngrok tunnel is active |
 | "Hey Google" doesn't find the room | Re-sync in Google Home: Devices → ⋮ → Sync |
-| Light responds but wrong room | Edit `google-home-devices.json`, change room, restart & re-sync |
+| Light responds but wrong room | Edit `~/.mqtt/google-home-devices.json`, change room, restart & re-sync |
 | Rainbow doesn't stop | Say "Hey Google, turn off Rainbow Party" or restart server |
-| New bulb not showing | Add IP to `google-home-devices.json`, restart server, re-sync |
+| New bulb not showing | Add IP to `~/.mqtt/google-home-devices.json`, restart server, re-sync |
 | ngrok URL changed | Update Authorization/Token/Fulfillment URLs in Cloud console → re-link |
 | Token changed after restart | Set `GOOGLE_HOME_TOKEN` in `~/.zshrc` for stable token |
 
@@ -249,8 +254,6 @@ curl -X POST "https://YOUR-NGROK-URL/token" \
 ```
 mqtt/
 ├── GOOGLE_HOME_SETUP.md                     ← This file
-├── src/main/resources/
-│   └── google-home-devices.json             ← Edit to add/rename devices and rooms
 └── src/main/java/com/openbeken/google/
     ├── GoogleHomeMain.java                  ← Entry point (./gradlew :mqtt:googleHome)
     ├── GoogleHomeServer.java                ← HTTP server (port 8080)
@@ -259,7 +262,14 @@ mqtt/
     ├── SceneExecutor.java                   ← Animation scenes (rainbow, warm, cool)
     ├── DeviceRegistry.java                  ← Loads google-home-devices.json
     └── GoogleDevice.java                    ← Device/Scene model
+
+~/.mqtt/
+└── google-home-devices.json                 ← Live device config (edit this one)
 ```
+
+> **Note**: The device config file lives at `~/.mqtt/google-home-devices.json`, outside
+> the repo. `GoogleHomeMain` loads it from there at startup. The copy previously at
+> `src/main/resources/google-home-devices.json` has been removed.
 
 ## OAuth Credentials Reference
 
@@ -298,10 +308,11 @@ Google Home voice command
 - `OAuthHandler.java` — auto-approving OAuth2 for personal use
 - `FulfillmentHandler.java` — SYNC / QUERY / EXECUTE intents
 - `SceneExecutor.java` — rainbow/warm/cool animation scenes
-- `DeviceRegistry.java` — loads `google-home-devices.json`
+- `DeviceRegistry.java` — loads `~/.mqtt/google-home-devices.json`
 - `GoogleDevice.java` — POJO for lights and scenes
 
-**New resources**: `mqtt/src/main/resources/google-home-devices.json` — 40 devices pre-mapped to rooms.
+**Device config**: `~/.mqtt/google-home-devices.json` — 40 devices pre-mapped to rooms.
+(The copy previously at `mqtt/src/main/resources/google-home-devices.json` has been removed.)
 
 ### Current State (End of Session)
 

@@ -379,6 +379,211 @@ private record ScanResult(OpenBekenDevice openBeken, DiscoveredPixelblaze pixelb
 
 ---
 
+## Step 6 — Pattern Control via the Modes Trait
+
+Declare `action.devices.traits.Modes` on a Pixelblaze device during SYNC. Google maps voice
+commands like *"set desk strip pattern to fire"* to `action.devices.commands.SetModes`, which
+the handler resolves to a `PixelblazeProgram` ID and calls `activatePattern()`.
+
+Programs are stored directly in `google-home-devices.json` alongside each Pixelblaze device —
+no separate scene entries needed.
+
+---
+
+### 6.1 — Update `google-home-devices.json`
+
+Add a `programs` array to each Pixelblaze entry. Each entry is a `PixelblazeProgram` — the
+`id` comes from `{"listPrograms":true}` via WebSocket (see `PixelblazeClient.listPatterns()`):
+
+```json
+"pixelblazes": [
+  {
+    "id": "pb-desk",
+    "name": "Desk Strip",
+    "room": "Office",
+    "ip": "192.168.86.210",
+    "programs": [
+      { "id": "GBtBx5PvfSLjKuGcd", "name": "fire"    },
+      { "id": "aK9mzXqRtLpWvBnYs", "name": "rainbow" },
+      { "id": "mN3pQwYvBcDkFhJrT", "name": "solid"   }
+    ]
+  }
+]
+```
+
+The `name` field becomes the Google Home mode setting name — keep it lowercase, single-word
+or hyphenated. This is exactly what you say to Google, so name programs naturally
+(`fire`, `slow-rainbow`, `white-pulse`) rather than using internal Pixelblaze display names
+which may have spaces and version numbers.
+
+---
+
+### 6.2 — Add `programs` to `GoogleHomeDevice`
+
+```java
+// In GoogleHomeDevice.java
+private List<PixelblazeProgram> programs;
+
+public List<PixelblazeProgram> getPrograms() {
+    return programs != null ? programs : Collections.emptyList();
+}
+```
+
+`PixelblazeProgram` is already mapped in `PixelblazeConfig` — reuse it here directly.
+
+---
+
+### 6.3 — Expose `programs` on `GoogleDevice`
+
+```java
+// In GoogleDevice.java
+private final List<PixelblazeProgram> programs;
+
+// Update the pixelblaze() factory:
+public static GoogleDevice pixelblaze(String id, String name, String room, String ip,
+                                       List<PixelblazeProgram> programs) {
+    return new GoogleDevice(id, name, room, Type.PIXELBLAZE, ip, null, null, null, programs);
+}
+
+public List<PixelblazeProgram> getPrograms() {
+    return programs != null ? programs : Collections.emptyList();
+}
+```
+
+Update `DeviceRegistry.parseJson()` to pass `programs` through:
+
+```java
+for (GoogleHomeDevice ghd : config.getPixelblazes()) {
+    String ip = (ghd.getIp() != null) ? ghd.getIp() : "";
+    GoogleDevice pixelblaze = GoogleDevice.pixelblaze(
+        ghd.getId(), ghd.getName(), ghd.getRoom(), ip, ghd.getPrograms()
+    );
+    devices.add(pixelblaze);
+    byId.put(ghd.getId(), pixelblaze);
+}
+```
+
+---
+
+### 6.4 — Update `FulfillmentHandler.sync()` — Add Modes Trait
+
+In the Pixelblaze loop inside `sync()`, add the `Modes` trait and its `attributes` block
+when the device has programs configured:
+
+```java
+for (GoogleDevice pb : registry.getPixelblazes()) {
+    JsonObject dev = new JsonObject();
+    dev.addProperty("id", pb.getId());
+    dev.addProperty("type", "action.devices.types.LIGHT");
+
+    JsonArray traits = new JsonArray();
+    traits.add("action.devices.traits.OnOff");
+    traits.add("action.devices.traits.Brightness");
+    traits.add("action.devices.traits.ColorSetting");
+
+    JsonObject attrs = new JsonObject();
+    attrs.addProperty("colorModel", "hsv");
+
+    // Add Modes trait only if programs are configured
+    if (!pb.getPrograms().isEmpty()) {
+        traits.add("action.devices.traits.Modes");
+
+        JsonObject modesDef = new JsonObject();
+        modesDef.addProperty("name", "pattern");
+
+        JsonArray nameValues = new JsonArray();
+        JsonObject nameVal = new JsonObject();
+        JsonArray synonyms = new JsonArray();
+        synonyms.add("pattern");
+        synonyms.add("animation");
+        nameVal.add("name_synonym", synonyms);
+        nameVal.addProperty("lang", "en");
+        nameValues.add(nameVal);
+        modesDef.add("name_values", nameValues);
+        modesDef.addProperty("ordered", false);
+
+        // One setting per PixelblazeProgram
+        JsonArray settings = new JsonArray();
+        for (PixelblazeProgram prog : pb.getPrograms()) {
+            JsonObject setting = new JsonObject();
+            setting.addProperty("setting_name", prog.getName());
+            JsonArray settingValues = new JsonArray();
+            JsonObject sv = new JsonObject();
+            JsonArray settingSynonyms = new JsonArray();
+            settingSynonyms.add(prog.getName());
+            sv.add("setting_synonym", settingSynonyms);
+            sv.addProperty("lang", "en");
+            settingValues.add(sv);
+            setting.add("setting_values", settingValues);
+            settings.add(setting);
+        }
+        modesDef.add("settings", settings);
+
+        JsonArray availableModes = new JsonArray();
+        availableModes.add(modesDef);
+        attrs.add("availableModes", availableModes);
+    }
+
+    dev.add("traits", traits);
+    dev.add("attributes", attrs);
+    // ... name, roomHint, willReportState as before
+    deviceArr.add(dev);
+}
+```
+
+---
+
+### 6.5 — Handle `SetModes` in `dispatchCommand()`
+
+Add this case to the `PIXELBLAZE` branch alongside the existing `OnOff`, `BrightnessAbsolute`,
+and `ColorAbsolute` cases:
+
+```java
+case "action.devices.commands.SetModes": {
+    JsonObject modeSettings = params.getAsJsonObject("updateModeSettings");
+    String requestedPattern = modeSettings.get("pattern").getAsString();
+
+    dev.getPrograms().stream()
+        .filter(p -> p.getName().equalsIgnoreCase(requestedPattern))
+        .findFirst()
+        .ifPresentOrElse(
+            prog -> {
+                pbClient(dev).activatePattern(prog.getId());
+                System.out.printf("[Fulfillment] Pixelblaze %s → pattern '%s' (%s)%n",
+                    dev.getName(), prog.getName(), prog.getId());
+            },
+            () -> System.err.printf("[Fulfillment] Unknown pattern '%s' on %s%n",
+                requestedPattern, dev.getName())
+        );
+    break;
+}
+```
+
+---
+
+### 6.6 — QUERY — Report Active Mode State
+
+Google's QUERY intent expects the current mode value. Reverse-map the active program ID back
+to its name for Google's response:
+
+```java
+// In the QUERY block for PIXELBLAZE devices:
+PixelblazeConfig config = pbClient(dev).getConfiguration();
+if (config != null && config.getActiveProgram() != null) {
+    String activeProgramId = config.getActiveProgram().getId();
+    dev.getPrograms().stream()
+        .filter(p -> p.getId().equals(activeProgramId))
+        .findFirst()
+        .ifPresent(p -> {
+            JsonObject currentModes = new JsonObject();
+            currentModes.addProperty("pattern", p.getName());
+            state.add("currentModes", currentModes);
+        });
+}
+```
+
+---
+
 ## Pixelblaze WebSocket API Reference
 
 | JSON Frame (send to `ws://{ip}:81`) | Purpose |
@@ -409,6 +614,9 @@ private record ScanResult(OpenBekenDevice openBeken, DiscoveredPixelblaze pixelb
 | "Turn off the couch strip" | `OnOff {on: false}` | `{"on":false}` |
 | "Set desk strip to 40%" | `BrightnessAbsolute {brightness: 40}` | `{"brightness":0.4}` |
 | "Set desk strip to red" | `ColorAbsolute {spectrumHSV: ...}` | `{"setVars":{"h":0,"s":1,"v":1}}` |
+| "Set desk strip pattern to fire" | `SetModes {pattern: "fire"}` | `{"activeProgramId":"GBtBx5Pv..."}` |
+| "Set desk strip pattern to rainbow" | `SetModes {pattern: "rainbow"}` | `{"activeProgramId":"aK9mzXqR..."}` |
+| "Set desk strip animation to solid" | `SetModes {pattern: "solid"}` | `{"activeProgramId":"mN3pQwYv..."}` |
 
 ---
 
@@ -417,9 +625,15 @@ private record ScanResult(OpenBekenDevice openBeken, DiscoveredPixelblaze pixelb
 | File | Change |
 |---|---|
 | `build.gradle` | Add `org.java-websocket:Java-WebSocket:1.5.6` |
-| `src/main/java/com/openbeken/google/GoogleDevice.java` | Add `PIXELBLAZE` to `Type` enum; add `pixelblaze()` factory method |
+| `src/main/java/com/openbeken/google/GoogleDevice.java` | Add `PIXELBLAZE` to `Type` enum; add `pixelblaze()` factory with `programs`; add `getPrograms()` |
+| `src/main/java/com/openbeken/google/GoogleHomeDevice.java` | Add `programs` field and `getPrograms()` |
 | `src/main/java/com/openbeken/google/PixelblazeClient.java` | **New file** — WebSocket client for Pixelblaze |
-| `src/main/java/com/openbeken/google/FulfillmentHandler.java` | Add `PIXELBLAZE` branch in `dispatchCommand()`; add `pbClients` cache |
-| `src/main/java/com/openbeken/google/DeviceRegistry.java` | Parse `"pixelblazes"` array from config |
+| `src/main/java/com/openbeken/google/FulfillmentHandler.java` | Add `PIXELBLAZE` branch in `dispatchCommand()` (OnOff/Brightness/Color/SetModes); add Modes trait in `sync()`; add QUERY mode state; add `pbClients` cache |
+| `src/main/java/com/openbeken/google/DeviceRegistry.java` | Parse `"pixelblazes"` array; pass `programs` through to `GoogleDevice` |
 | `src/main/java/com/openbeken/discovery/OpenBekenDiscoveryService.java` | Add `probePixelblaze()`, `scanSubnetAll()`, and supporting record types |
-| `src/main/resources/google-home-devices.json` | Add `"pixelblazes"` array with device entries |
+| `~/.mqtt/google-home-devices.json` | Add `"pixelblazes"` array with device entries and `programs` per device — **see config note below** |
+
+> **Config file location**: `GoogleHomeMain` loads `google-home-devices.json` from
+> `~/.mqtt/google-home-devices.json` at runtime. The copy previously at
+> `src/main/resources/google-home-devices.json` is not used and has been removed.
+> See `mqtt/GOOGLE_HOME_SETUP.md` for details.
