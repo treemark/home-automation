@@ -362,11 +362,12 @@ public class OpenBekenCLI {
         }
         System.out.printf("  Verified %d OpenBeken device(s)\n", verified);
         
-        // Check Pixelblaze online status
+        // Check Pixelblaze online status using PixelblazeClient
         int pbVerified = 0;
         for (GoogleHomeDevice pb : pixelblazes) {
             if (pb.getIp() != null && !pb.getIp().isEmpty()) {
-                if (isPixelblazeOnline(pb.getIp())) {
+                PixelblazeClient client = new PixelblazeClient(pb.getIp());
+                if (client.isOnline()) {
                     pbVerified++;
                 }
             }
@@ -390,9 +391,13 @@ public class OpenBekenCLI {
                     trunc(d.getDiscoveryMethod(), 12));
         }
         System.out.println("├───────────────────────────────────────────────────────────────────────────────────┤");
-        // Display Pixelblaze devices
+        // Display Pixelblaze devices using PixelblazeClient for online check
         for (GoogleHomeDevice pb : pixelblazes) {
-            boolean online = pb.getIp() != null && !pb.getIp().isEmpty() && isPixelblazeOnline(pb.getIp());
+            boolean online = false;
+            if (pb.getIp() != null && !pb.getIp().isEmpty()) {
+                PixelblazeClient client = new PixelblazeClient(pb.getIp());
+                online = client.isOnline();
+            }
             System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-12s │%n",
                     trunc(pb.getId(), 20),
                     trunc(pb.getIp() != null ? pb.getIp() : "N/A", 16),
@@ -980,22 +985,6 @@ public class OpenBekenCLI {
         }
         
         return new ArrayList<>();
-    }
-
-    /**
-     * Check if a Pixelblaze device is online by probing port 81 (WebSocket).
-     * @param ip the IP address to check
-     * @return true if the device responds on port 81
-     */
-    private boolean isPixelblazeOnline(String ip) {
-        try {
-            java.net.Socket socket = new java.net.Socket();
-            socket.connect(new java.net.InetSocketAddress(ip, 81), 2000);
-            socket.close();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     /**

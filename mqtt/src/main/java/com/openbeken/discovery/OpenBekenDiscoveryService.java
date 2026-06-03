@@ -1,5 +1,6 @@
 package com.openbeken.discovery;
 
+import com.openbeken.google.PixelblazeClient;
 import com.openbeken.model.*;
 import com.openbeken.util.JsonUtil;
 
@@ -7,7 +8,6 @@ import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.net.URI;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,8 +18,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import lombok.extern.slf4j.Slf4j;
-import org.java_websocket.client.WebSocketClient;
-import org.java_websocket.handshake.ServerHandshake;
 
 /**
  * Service for discovering OpenBeken devices on the local network.
@@ -988,7 +986,7 @@ public class OpenBekenDiscoveryService {
     /**
      * Probe a single IP address to check if it's a Pixelblaze controller.
      * Uses port 81 as discriminator - OpenBeken never opens port 81.
-     * Uses Jackson (JsonUtil) to parse the JSON response from {"getConfig": true}.
+     * Now delegates to PixelblazeClient for config retrieval.
      */
     private PixelblazeDevice probePixelblaze(String ip) {
         // Port 80 must be open (web UI present)
@@ -1002,24 +1000,17 @@ public class OpenBekenDiscoveryService {
         }
         
         try {
-            // Send {"getConfig": true} to WebSocket on port 81 and get JSON response
-            String configJson = sendWsAndGetResponse(ip, "{\"getConfig\":true}");
-            if (configJson == null || configJson.isEmpty()) {
-                return null;
-            }
+            // Use PixelblazeClient to get config
+            PixelblazeClient client = new PixelblazeClient(ip);
             
-            // Use Jackson to parse the JSON response
-            Map<String, Object> config = JsonUtil.fromJson(configJson, Map.class);
-            
-            // Extract name - try different possible field names
-            String name = getStringFromJson(config, "name", "deviceName", "hostname", "deviceName");
+            // Get name from config
+            String name = client.getName();
             if (name == null || name.isEmpty()) {
                 name = "Pixelblaze " + ip;
             }
             
-            // Extract active pattern
-
-            String pattern = getStringFromJson(config, "activeProgram");
+            // Get active pattern
+            String pattern = client.getActivePattern();
             if (pattern == null || pattern.isEmpty()) {
                 pattern = "Unknown";
             }
@@ -1030,75 +1021,6 @@ public class OpenBekenDiscoveryService {
             System.err.println("[Pixelblaze] Probe error for " + ip + ": " + e.getMessage());
         }
         return null;
-    }
-    
-    /**
-     * Helper to get a string value from a JSON map, trying multiple possible keys.
-     */
-    private String getStringFromJson(Map<String, Object> json, String... keys) {
-        for (String key : keys) {
-            Object value = json.get(key);
-            if (value != null) {
-                return value.toString();
-            }
-        }
-        return null;
-    }
-    
-    /**
-     * Send a JSON frame to the Pixelblaze WebSocket and get the response.
-     */
-    private String sendWsAndGetResponse(String ip, String jsonFrame) {
-        return sendWsWithJavaWebSocket(ip, jsonFrame);
-    }
-    
-    /**
-     * Send WebSocket message using Java-WebSocket library and get response.
-     */
-    private String sendWsWithJavaWebSocket(String ip, String jsonFrame) {
-        try {
-            URI uri = new URI("ws://" + ip + ":81");
-            StringBuilder response = new StringBuilder();
-            CountDownLatch latch = new CountDownLatch(1);
-            
-            WebSocketClient ws = new WebSocketClient(uri) {
-                @Override
-                public void onOpen(ServerHandshake handshake) {
-                    send(jsonFrame);
-                }
-                
-                @Override
-                public void onMessage(String message) {
-                    response.append(message);
-                }
-                
-                @Override
-                public void onClose(int code, String reason, boolean remote) {
-                    latch.countDown();
-                }
-                
-                @Override
-                public void onError(Exception e) {
-                    System.err.println("[Pixelblaze WS] Error: " + e.getMessage());
-                    latch.countDown();
-                }
-            };
-            
-            ws.connect();
-            boolean waited = latch.await(6, TimeUnit.SECONDS);
-            
-            if (response.length() > 0) {
-                ws.close();
-                return response.toString();
-            }
-            
-            ws.close();
-            return null;
-            
-        } catch (Exception e) {
-            System.err.println("[Pixelblaze WS] Failed to get config: " + e.getMessage());
-            return null;
-        }
     }
     
     /**
