@@ -1,3 +1,3 @@
-include 'zsmart'
+//include 'zsmart'
 include 'mqtt'
-include 'philips'
+//include 'philips'

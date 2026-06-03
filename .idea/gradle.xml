@@ -9,8 +9,6 @@
           <set>
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/mqtt" />
-            <option value="$PROJECT_DIR$/philips" />
-            <option value="$PROJECT_DIR$/zsmart" />
           </set>
         </option>
       </GradleProjectSettings>

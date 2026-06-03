@@ -10,7 +10,7 @@ package com.openbeken.google;
  */
 public class GoogleDevice {
 
-    public enum Type { LIGHT, SCENE }
+    public enum Type { LIGHT, SCENE ,PIXELBLAZE}
 
     private final String id;
     private final String name;
@@ -65,6 +65,10 @@ public class GoogleDevice {
     /** Factory method for SCENE devices */
     public static GoogleDevice scene(String id, String name, String room, String animation, String group) {
         return new GoogleDevice(id, name, room, Type.SCENE, null, null, animation, group);
+    }
+
+    public static GoogleDevice pixelblaze(String id, String name, String room, String ip) {
+        return new GoogleDevice(id, name, room, Type.PIXELBLAZE, ip, null, null, null);
     }
 
     public String getId()         { return id; }

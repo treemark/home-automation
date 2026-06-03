@@ -1,9 +1,6 @@
 package com.openbeken.discovery;
 
-import com.openbeken.model.GoogleHomeDevice;
-import com.openbeken.model.GoogleHomeDevicesConfig;
-import com.openbeken.model.GoogleHomeScene;
-import com.openbeken.model.OpenBekenDevice;
+import com.openbeken.model.*;
 import com.openbeken.util.JsonUtil;
 
 import java.io.*;
@@ -946,6 +943,217 @@ public class OpenBekenDiscoveryService {
         discoveredDevices.put(device.getDeviceId(), device);
     }
 
+    // --- PixelBlaze Discovery ---
+    
+    /**
+     * Represents a discovered Pixelblaze LED controller.
+     */
+
+    
+    /**
+     * Scan a subnet range for Pixelblaze LED controllers.
+     * Pixelblaze devices expose HTTP endpoints like /sendVars, /activateProgram, /config.
+     * Detection uses the /config endpoint returning JSON with "board" = "pixelblaze".
+     */
+    public List<PixelblazeDevice> scanSubnetForPixelblaze(String subnetPrefix, int startHost, int endHost) {
+        ExecutorService executor = Executors.newFixedThreadPool(SCAN_THREAD_POOL_SIZE);
+        List<Future<PixelblazeDevice>> futures = new ArrayList<>();
+        
+        for (int i = startHost; i <= endHost; i++) {
+            final String ip = subnetPrefix + "." + i;
+            futures.add(executor.submit(() -> probePixelblaze(ip)));
+        }
+        
+        List<PixelblazeDevice> results = new ArrayList<>();
+        for (Future<PixelblazeDevice> future : futures) {
+            try {
+                PixelblazeDevice device = future.get(HTTP_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS);
+                if (device != null) {
+                    results.add(device);
+                }
+            } catch (Exception e) {
+                // timeout or error
+            }
+        }
+        
+        executor.shutdown();
+        return results;
+    }
+    
+    /**
+     * Probe a single IP address to check if it's a Pixelblaze controller.
+     * Checks for JSON response from /config endpoint containing "board": "pixelblaze".
+     */
+    private PixelblazeDevice probePixelblaze(String ip) {
+        // Quick port check first
+        if (!isPortOpen(ip, 80)) {
+            return null;
+        }
+        
+        try {
+            // Try the /config endpoint - Pixelblaze returns JSON config
+            String configResponse = httpGet("http://" + ip + "/config");
+            if (configResponse != null && configResponse.contains("pixelblaze")) {
+                // Parse the name from config - look for "name" field
+                String name = extractJsonValue(configResponse, "name", "deviceName", "hostname");
+                if (name == null || name.isEmpty()) {
+                    name = "Pixelblaze " + ip;
+                }
+                
+                // Try to get the active pattern - check /status or the main page
+                String pattern = "Unknown";
+                try {
+                    String statusResponse = httpGet("http://" + ip + "/status");
+                    if (statusResponse != null) {
+                        pattern = extractJsonValue(statusResponse, "activePattern", "pattern", "currentPattern");
+                        if (pattern == null) {
+                            // Try parsing from HTML
+                            pattern = extractPatternFromHtml(statusResponse);
+                        }
+                    }
+                    if (pattern == null || pattern.isEmpty() || pattern.equals("Unknown")) {
+                        // Try main page
+                        String indexResponse = httpGet("http://" + ip + "/");
+                        pattern = extractPatternFromHtml(indexResponse);
+                    }
+                } catch (Exception e) {
+                    // ignore - default to Unknown
+                }
+                
+                return new PixelblazeDevice(ip, name, pattern);
+            }
+            
+            // Fallback: check the main page for Pixelblaze markers
+            String indexResponse = httpGet("http://" + ip + "/");
+            if (indexResponse != null && indexResponse.toLowerCase().contains("pixelblaze")) {
+                // Extract name from page
+                String name = extractNameFromHtml(indexResponse);
+                if (name == null || name.isEmpty()) {
+                    name = "Pixelblaze " + ip;
+                }
+                String pattern = extractPatternFromHtml(indexResponse);
+                return new PixelblazeDevice(ip, name, pattern);
+            }
+            
+        } catch (Exception e) {
+            // Not a Pixelblaze device or not reachable
+        }
+        return null;
+    }
+    
+    /**
+     * Extract device name from Pixelblaze HTML page.
+     */
+    private String extractNameFromHtml(String html) {
+        if (html == null) return null;
+        
+        // Look for patterns like: <td>Name: </td><td>My LED Strip</td>
+        // or: <input name="name" value="My Strip">
+        Pattern p = Pattern.compile("(?:Name|name)[^:]*:?\\s*</(?:td|th)><(?:td|th)>([^<]+)<", Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(html);
+        if (m.find()) {
+            return m.group(1).trim();
+        }
+        
+        // Alternative: <input ... value="..." />
+        p = Pattern.compile("name=(?:\"|')[Nn]ame(?:\"|')[^>]*value=(?:\"|')([^\"']+)");
+        m = p.matcher(html);
+        if (m.find()) {
+            return m.group(1).trim();
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Extract active pattern name from Pixelblaze HTML/status page.
+     */
+    private String extractPatternFromHtml(String html) {
+        if (html == null) return "Unknown";
+        
+        // Try JSON first - look for "activePattern" or "pattern" field
+        String pattern = extractJsonValue(html, "activePattern", "pattern", "currentPattern", "runningPattern");
+        if (pattern != null && !pattern.isEmpty()) {
+            return pattern;
+        }
+        
+        // Try HTML parsing - look for dropdown or button showing current pattern
+        // Common pattern: selected>Pattern Name</option>
+        Pattern p = Pattern.compile("selected[^>]*>([^<]+)</(?:option|span)", Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(html);
+        if (m.find()) {
+            return m.group(1).trim();
+        }
+        
+        return "Unknown";
+    }
+    
+    /**
+     * Sync discovered Pixelblaze devices to google-home-devices.json.
+     * Adds them to the "pixelblazes" array in the config file.
+     */
+    public void syncPixelblazesToGoogleHome(String googleHomeJsonPath, List<PixelblazeDevice> pixelblazes) 
+            throws IOException {
+        Path path = Path.of(googleHomeJsonPath);
+        GoogleHomeDevicesConfig config;
+        
+        // Read existing config
+        if (Files.exists(path)) {
+            String existingJson = Files.readString(path);
+            config = JsonUtil.fromJson(existingJson, GoogleHomeDevicesConfig.class);
+        } else {
+            config = new GoogleHomeDevicesConfig();
+            config.setComment("Google Home device registry");
+        }
+        
+        // Get existing Pixelblaze IDs to avoid duplicates
+        Map<String, GoogleHomeDevice> existingPixelblazes = new HashMap<>();
+        if (config.getPixelblazes() != null) {
+            for (GoogleHomeDevice pb : config.getPixelblazes()) {
+                existingPixelblazes.put(pb.getId(), pb);
+            }
+        }
+        
+        // Track which ones we found
+        Set<String> foundIds = new HashSet<>();
+        
+        // Update or add Pixelblazes
+        List<GoogleHomeDevice> updatedList = new ArrayList<>();
+        
+        for (PixelblazeDevice pb : pixelblazes) {
+            foundIds.add(pb.id);
+            
+            if (existingPixelblazes.containsKey(pb.id)) {
+                // Update existing - preserve name/room, update IP
+                GoogleHomeDevice existing = existingPixelblazes.get(pb.id);
+                if (!pb.ip.equals(existing.getIp())) {
+                    existing.setIp(pb.ip);
+                }
+                updatedList.add(existing);
+            } else {
+                // Add new Pixelblaze device
+                updatedList.add(new GoogleHomeDevice(pb.id, pb.name, "Uncategorized", pb.ip, null));
+            }
+        }
+        
+        // Keep any existing Pixelblazes that weren't discovered this time
+        if (config.getPixelblazes() != null) {
+            for (GoogleHomeDevice existing : config.getPixelblazes()) {
+                if (!foundIds.contains(existing.getId())) {
+                    updatedList.add(existing);
+                }
+            }
+        }
+        
+        // Sort by name
+        updatedList.sort(Comparator.comparing(GoogleHomeDevice::getName));
+        config.setPixelblazes(updatedList);
+        
+        // Write updated config
+        String updatedJson = JsonUtil.toJson(config);
+        Files.writeString(path, updatedJson);
+    }
+    
     // --- Cache persistence ---
 
     /**

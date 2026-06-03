@@ -19,6 +19,9 @@ public class GoogleHomeDevicesConfig {
     @JsonProperty("scenes")
     private List<GoogleHomeScene> scenes = new ArrayList<>();
     
+    @JsonProperty("pixelblazes")
+    private List<GoogleHomeDevice> pixelblazes = new ArrayList<>();
+    
     public GoogleHomeDevicesConfig() {
     }
     
@@ -46,9 +49,17 @@ public class GoogleHomeDevicesConfig {
         this.scenes = scenes;
     }
     
+    public List<GoogleHomeDevice> getPixelblazes() {
+        return pixelblazes;
+    }
+    
+    public void setPixelblazes(List<GoogleHomeDevice> pixelblazes) {
+        this.pixelblazes = pixelblazes;
+    }
+    
     @Override
     public String toString() {
-        return String.format("GoogleHomeDevicesConfig{devices=%d, scenes=%d}", 
-                devices.size(), scenes.size());
+        return String.format("GoogleHomeDevicesConfig{devices=%d, scenes=%d, pixelblazes=%d}", 
+                devices.size(), scenes.size(), pixelblazes.size());
     }
 }

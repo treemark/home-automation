@@ -6,6 +6,7 @@ import com.openbeken.discovery.MqttDiscoveryService;
 import com.openbeken.discovery.OpenBekenDiscoveryService;
 import com.openbeken.discovery.OpenBekenDiscoveryService.InventoryDevice;
 import com.openbeken.model.OpenBekenDevice;
+import com.openbeken.model.PixelblazeDevice;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -113,6 +114,8 @@ public class OpenBekenCLI {
     private void printHelp() {
         System.out.println("\n=== Discovery Commands ===");
         System.out.println("  scan [subnet] [start] [end]   - Scan subnet for OpenBeken devices via HTTP");
+        System.out.println("  scan -p [--pixelblaze]       - Scan subnet for PixelBlaze LED controllers");
+        System.out.println("  scan [opts] -p               - Scan for both OpenBeken and PixelBlaze");
         System.out.println("  inventory [path]              - Load devices.json and probe known IPs");
         System.out.println("  probe <ip>                    - Probe a single IP for OpenBeken");
         System.out.println("  mqtt-discover [broker-url]    - Listen on MQTT broker for devices");
@@ -147,9 +150,24 @@ public class OpenBekenCLI {
     // --- Discovery commands ---
 
     private void cmdScan(String[] parts) {
-        String sub = parts.length > 1 ? parts[1] : subnet;
-        int start = parts.length > 2 ? Integer.parseInt(parts[2]) : 1;
-        int end = parts.length > 3 ? Integer.parseInt(parts[3]) : 254;
+        // Check for PixelBlaze scan flag
+        boolean scanPixelblaze = true;
+        int argOffset = 0;
+        
+        // Check for -p or --pixelblaze flag
+        for (int i = 0; i < parts.length; i++) {
+            if (parts[i].equals("-p") || parts[i].equals("--pixelblaze")) {
+                scanPixelblaze = true;
+                argOffset = i + 1;
+                break;
+            }
+        }
+        
+        String sub = parts.length > argOffset ? parts[argOffset] : subnet;
+        int start = parts.length > argOffset + 1 ? Integer.parseInt(parts[argOffset + 1]) : 1;
+        int end = parts.length > argOffset + 2 ? Integer.parseInt(parts[argOffset + 2]) : 254;
+        
+        // Scan for OpenBeken devices first
         System.out.printf("\n→ Scanning %s.%d-%d for OpenBeken devices...\n", sub, start, end);
         var listener = new ConsoleDiscoveryListener();
         var found = discoveryService.scanSubnet(sub, start, end, listener);
@@ -163,6 +181,57 @@ public class OpenBekenCLI {
             String googleHomeJson = home + "/.mqtt/google-home-devices.json";
             System.out.println("\n→ Syncing to " + googleHomeJson + "...");
             discoveryService.syncToGoogleHomeDevices(googleHomeJson);
+        }
+        
+        // Optionally scan for PixelBlaze devices
+        if (scanPixelblaze) {
+            cmdScanPixelblaze(sub, start, end);
+        }
+    }
+    
+    /**
+     * Scan the subnet for PixelBlaze LED controller devices.
+     * PixelBlaze devices expose a simple HTTP API on port 80.
+     * 
+     * @param subnet subnet prefix (e.g. "192.168.86")
+     * @param start  start of host range
+     * @param end    end of host range
+     */
+    private void cmdScanPixelblaze(String subnet, int start, int end) {
+        System.out.printf("\n→ Scanning %s.%d-%d for PixelBlaze devices...\n", subnet, start, end);
+        
+        List<PixelblazeDevice> found = discoveryService.scanSubnetForPixelblaze(subnet, start, end);
+        
+        if (found.isEmpty()) {
+            System.out.println("\n✓ No PixelBlaze devices found.");
+            return;
+        }
+        
+        System.out.printf("\n✓ Found %d PixelBlaze device(s)\n", found.size());
+        
+        // Display found devices
+        System.out.println("\n┌────────────────────────────────────────────────────────────────────────────────────────┐");
+        System.out.printf("│ %-12s │ %-16s │ %-20s │%-35s%n", "ID", "IP", "Name", "Active Pattern");
+        System.out.println("├────────────────────────────────────────────────────────────────────────────────────────┤");
+        for (PixelblazeDevice pb : found) {
+            System.out.printf("│ %-12s │ %-16s │ %-20s │%-35s%n",
+                    trunc(pb.id, 12),
+                    pb.ip,
+                    trunc(pb.name, 20),
+                    trunc(pb.activePattern, 35));
+        }
+        System.out.println("└────────────────────────────────────────────────────────────────────────────────────────┘");
+        
+        // Sync to google-home-devices.json
+        String home = System.getProperty("user.home");
+        String googleHomeJson = home + "/.mqtt/google-home-devices.json";
+        System.out.println("\n→ Syncing PixelBlaze devices to " + googleHomeJson + "...");
+        
+        try {
+            discoveryService.syncPixelblazesToGoogleHome(googleHomeJson, found);
+            System.out.println("  PixelBlaze devices synced successfully.");
+        } catch (Exception e) {
+            System.err.println("  ✗ Failed to sync: " + e.getMessage());
         }
     }
 
