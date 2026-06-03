@@ -101,9 +101,13 @@ public class PixelblazeClient {
 
     // ── Public API ─────────────────────────────────────────────────────────────
 
-    /** Power on/off. Maps to brightness 1.0 / 0.0. */
+    /**
+     * Power on/off. Pixelblaze has no on/off command — brightness is used instead.
+     * on=true  → brightness 1.0 (full)
+     * on=false → brightness 0.0 (off)
+     */
     public void setOn(boolean on) {
-        send("{\"on\":" + on + "}");
+        send("{\"brightness\":" + (on ? 1.0f : 0.0f) + "}");
     }
 
     /**
@@ -211,6 +215,7 @@ private boolean dispatchCommand(String devId, String command, JsonObject params)
             PixelblazeClient pb = pbClient(dev);
             switch (command) {
                 case "action.devices.commands.OnOff" ->
+                    // Pixelblaze has no on/off — setOn() maps to brightness 1.0/0.0
                     pb.setOn(params.get("on").getAsBoolean());
                 case "action.devices.commands.BrightnessAbsolute" ->
                     pb.setBrightness(params.get("brightness").getAsInt());
@@ -588,8 +593,8 @@ if (config != null && config.getActiveProgram() != null) {
 
 | JSON Frame (send to `ws://{ip}:81`) | Purpose |
 |---|---|
-| `{"on": true}` | Power on |
-| `{"on": false}` | Power off |
+| `{"brightness": 1.0}` | Power on (Pixelblaze has no on/off — use brightness) |
+| `{"brightness": 0.0}` | Power off |
 | `{"brightness": 0.5}` | Global brightness (0.0–1.0) |
 | `{"setVars": {"h": 0.0, "s": 1.0, "v": 1.0}}` | Push HSV vars to active pattern |
 | `{"activeProgramId": "<id>"}` | Switch to a pattern by ID |
@@ -610,8 +615,8 @@ if (config != null && config.getActiveProgram() != null) {
 
 | Voice Command | Google Intent | Pixelblaze WS Frame |
 |---|---|---|
-| "Turn on the desk strip" | `OnOff {on: true}` | `{"on":true}` |
-| "Turn off the couch strip" | `OnOff {on: false}` | `{"on":false}` |
+| "Turn on the desk strip" | `OnOff {on: true}` | `{"brightness":1.0}` (no on/off — uses brightness) |
+| "Turn off the couch strip" | `OnOff {on: false}` | `{"brightness":0.0}` (no on/off — uses brightness) |
 | "Set desk strip to 40%" | `BrightnessAbsolute {brightness: 40}` | `{"brightness":0.4}` |
 | "Set desk strip to red" | `ColorAbsolute {spectrumHSV: ...}` | `{"setVars":{"h":0,"s":1,"v":1}}` |
 | "Set desk strip pattern to fire" | `SetModes {pattern: "fire"}` | `{"activeProgramId":"GBtBx5Pv..."}` |

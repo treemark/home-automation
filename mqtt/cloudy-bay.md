@@ -1,10 +1,27 @@
-ra
-  - P7 = PWM (role 7, channel 4)
-  - P8 = PWM (role 7, channel 1)
-  - P24 = PWM (role 7, channel 2)
-  - P26 = PWM (role 7, channel 3)
-- **Startup Command**: Only `led_enableAll 1` (no channel mapping needed)
-- **Known Issue**: New PWM bulb (192.168.86.111) has dimmer controls but missing RGB controls
+# Cloudy Bay — Driver Detection & Multi-Bulb Configuration
+
+> ⚠️ **Note**: The top section of this document was lost when it was originally pasted in.
+> The content below picks up mid-way through what appears to be a PWM bulb configuration
+> summary. Please restore or rewrite the introductory section covering the session context,
+> goals, and full PWM pin reference when possible.
+
+## PWM Bulb Pin Configuration
+
+> *(Note: top of this section was lost — context above this point is missing)*
+
+PWM bulbs use 5 pins for independent RGB + Cool White + Warm White control.
+Configured by `configurePWMPins()` in `OpenBekenDiscoveryService`:
+
+| Pin | Role | Channel | Color |
+|-----|------|---------|-------|
+| P6  | PWM (role 7) | 5 | Warm White |
+| P7  | PWM (role 7) | 4 | Cool White |
+| P8  | PWM (role 7) | 1 | Blue |
+| P24 | PWM (role 7) | 2 | Red |
+| P26 | PWM (role 7) | 3 | Green |
+
+- **Startup Command**: Only `led_enableAll 1` (no channel mapping needed — PWM uses direct pin channels)
+- **Known Issue**: New PWM bulb (192.168.86.111) has dimmer controls but missing RGB controls — see Problem 3 below (✅ resolved)
 
 ## Implementation Changes
 
@@ -14,6 +31,7 @@ ra
 {
   "mac_prefixes": {
     "10:5a:17": "BP5758D",
+    "38:1f:8d": "BP5758D",
     "38:2c:e5": "PWM"
   }
 }
@@ -54,7 +72,7 @@ Now configures 4 settings per device:
 Output example:
 ```
 obk17814362 (192.168.86.205)
-  ✓ MQTT broker → 192.168.86.23:1883 (configured)
+  ✓ MQTT broker → <BROKER_IP>:1883 (configured)
   ✓ GPIO pins — configured (BP5758D)
   ✓ Channel mapping — updated (BP5758D)
   ✓ led_enableAll 1 — Updated
@@ -204,11 +222,10 @@ For new bulbs after configuration:
 
 ## Next Session TODO
 
-1. **Diagnose PWM RGB issue** on 192.168.86.111
-   - Compare with working bulb 192.168.86.60
-   - Check driver activation status
-   - Test RGB commands via MQTT
-   - May need additional PWM driver configuration
+1. ~~**Diagnose PWM RGB issue** on 192.168.86.111~~ ✅ **RESOLVED** (2026-05-12)
+   - Root cause: all PWM pins were assigned to channel 0 instead of channels 1–5
+   - Fix: updated `configurePWMPins()` to assign correct channel numbers per pin
+   - See **Problem 3** above for full details and verification steps
 
 2. **Test with more bulb models**
    - Add new MAC prefixes to driver-mappings.json as discovered

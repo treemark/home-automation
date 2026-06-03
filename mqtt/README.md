@@ -85,14 +85,14 @@ Once flashed, each bulb runs a web interface. Configure MQTT to point at our bro
 ```bash
 # Automated setup via HTTP
 DEVICE_IP="192.168.86.66"  # find via router or OpenBeken AP
-curl "http://$DEVICE_IP/cfg_mqtt?mqtt_host=192.168.1.5&mqtt_port=1883&mqtt_client_id=obk$(echo $DEVICE_IP | tr '.' '_')&mqtt_group=animations"
+curl "http://$DEVICE_IP/cfg_mqtt?mqtt_host=<BROKER_IP>&mqtt_port=1883&mqtt_client_id=obk$(echo $DEVICE_IP | tr '.' '_')&mqtt_group=animations"
 curl "http://$DEVICE_IP/index?restart=1"
 ```
 
 **MQTT Settings per device:**
 | Setting | Value |
 |---------|-------|
-| Host | `192.168.1.5` (broker machine) |
+| Host | `<BROKER_IP>` (broker machine — see `~/.zshrc` or `MQTT_BROKER_HOST` env var) |
 | Port | `1883` |
 | Client Topic | `obk{DEVICE_MAC_SUFFIX}` (unique per device) |
 | Group Topic | `animations` (shared — enables broadcast) |
