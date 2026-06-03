@@ -1,66 +1,120 @@
 package com.openbeken.google;
 
-import java.net.URI;
-import java.net.http.*;
-import java.time.Duration;
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
 
+import java.net.URI;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * WebSocket client for Pixelblaze LED controller.
+ * 
+ * Pixelblaze is controlled exclusively via WebSocket on port 81.
+ * Each command opens a connection, sends one JSON frame, then closes.
+ * 
+ * Usage: one PixelblazeClient instance per device (cache recommended).
+ */
 public class PixelblazeClient {
 
-    private final String baseUrl;
-    private final HttpClient http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(2))
-            .build();
+    private final String ip;
+    private final URI uri;
 
     public PixelblazeClient(String ip) {
-        this.baseUrl = "http://" + ip;
+        this.ip = ip;
+        this.uri = URI.create("ws://" + ip + ":81");
     }
 
-    /** on=true → brightness 1.0, on=false → brightness 0.0 */
+    // ── Public API ─────────────────────────────────────────────────────────────
+
+    /** Power on/off. Maps to brightness 1.0 / 0.0. */
     public void setOn(boolean on) {
-        sendVars("{\"on\":" + on + "}");
+        send("{\"on\":" + on + "}");
     }
 
-    /** brightness: 0–100 (Google) → 0.0–1.0 (Pixelblaze) */
+    /**
+     * Global brightness.
+     * @param percent 0–100 (Google scale) → normalized to 0.0–1.0 (Pixelblaze scale)
+     */
     public void setBrightness(int percent) {
-        float b = percent / 100f;
-        sendVars("{\"brightness\":" + b + "}");
+        float b = Math.max(0f, Math.min(1f, percent / 100f));
+        send("{\"brightness\":" + b + "}");
     }
 
-    /** h: 0–360, s: 0–100, v: 0–100 (Google HSV) → Pixelblaze pattern vars */
+    /**
+     * Set color via pattern variables.
+     * The active Pixelblaze pattern must declare: export var h, s, v
+     *
+     * @param h hue        0–360  (Google) → 0.0–1.0 (Pixelblaze)
+     * @param s saturation 0–100  (Google) → 0.0–1.0 (Pixelblaze)
+     * @param v value      0–100  (Google) → 0.0–1.0 (Pixelblaze)
+     */
     public void setColor(int h, int s, int v) {
         float hf = h / 360f;
         float sf = s / 100f;
         float vf = v / 100f;
-        sendVars("{\"h\":" + hf + ",\"s\":" + sf + ",\"v\":" + vf + "}");
+        send("{\"setVars\":{\"h\":" + hf + ",\"s\":" + sf + ",\"v\":" + vf + "}}");
     }
 
-    /** Activate a named pattern by name */
-    public void setPattern(String patternName) {
-        // GET /activateProgram?name=<pattern>
-        send(baseUrl + "/activateProgram?name=" + patternName.replace(" ", "%20"));
+    /**
+     * Activate a pattern by its ID (not display name).
+     * Obtain IDs via listPatterns() during discovery/setup.
+     */
+    public void activatePattern(String patternId) {
+        send("{\"activeProgramId\":\"" + patternId + "\"}");
     }
 
-    private void sendVars(String json) {
-        send(baseUrl + "/sendVars", json);
+    /**
+     * Request the pattern list. Response arrives asynchronously.
+     * Use during discovery/setup to map display names → IDs.
+     */
+    public void listPatterns() {
+        send("{\"listPrograms\":true}");
     }
 
-    private void send(String url) {
-        send(url, null);
-    }
+    // ── WebSocket send (connect → send → close) ───────────────────────────
 
-    private void send(String url, String jsonBody) {
+    /**
+     * Send a JSON frame over WebSocket.
+     * Opens connection, sends frame, then closes immediately.
+     */
+    private void send(String json) {
+        CountDownLatch latch = new CountDownLatch(1);
+        
         try {
-            HttpRequest.Builder req = HttpRequest.newBuilder().uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(3));
-            if (jsonBody != null) {
-                req.POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                        .header("Content-Type", "application/json");
-            } else {
-                req.GET();
-            }
-            http.send(req.build(), HttpResponse.BodyHandlers.discarding());
+            WebSocketClient ws = new WebSocketClient(uri) {
+                @Override
+                public void onOpen(ServerHandshake handshake) {
+                    send(json);
+                    latch.countDown();
+                    close();
+                }
+
+                @Override
+                public void onMessage(String message) {
+                    // Log pattern list responses during discovery
+                    if (message.contains("listPrograms") || message.contains("programs")) {
+                        System.out.println("[Pixelblaze:" + ip + "] " + message);
+                    }
+                }
+
+                @Override
+                public void onClose(int code, String reason, boolean remote) {
+                    // Connection closed normally
+                }
+
+                @Override
+                public void onError(Exception e) {
+                    System.err.println("[Pixelblaze:" + ip + "] WS error: " + e.getMessage());
+                    latch.countDown();
+                }
+            };
+
+            ws.connectBlocking(2, TimeUnit.SECONDS);
+            latch.await(3, TimeUnit.SECONDS);
+            
         } catch (Exception e) {
-            System.err.println("[Pixelblaze] HTTP error → " + url + " : " + e.getMessage());
+            System.err.println("[Pixelblaze:" + ip + "] send failed: " + e.getMessage());
         }
     }
 }

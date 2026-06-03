@@ -5,13 +5,20 @@ import com.openbeken.broker.EmbeddedBroker;
 import com.openbeken.discovery.MqttDiscoveryService;
 import com.openbeken.discovery.OpenBekenDiscoveryService;
 import com.openbeken.discovery.OpenBekenDiscoveryService.InventoryDevice;
+import com.openbeken.google.GoogleDevice;
+import com.openbeken.google.PixelblazeClient;
+import com.openbeken.model.GoogleHomeDevice;
+import com.openbeken.model.GoogleHomeDevicesConfig;
 import com.openbeken.model.OpenBekenDevice;
 import com.openbeken.model.PixelblazeDevice;
+import com.openbeken.util.JsonUtil;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -30,6 +37,7 @@ public class OpenBekenCLI {
     private EmbeddedBroker embeddedBroker;
     private String brokerUrl = DEFAULT_BROKER;
     private String subnet = DEFAULT_SUBNET;
+    private List<GoogleHomeDevice> pixelblazeDevices = new ArrayList<>();
 
     public OpenBekenCLI() {
         this.discoveryService = new OpenBekenDiscoveryService();
@@ -113,9 +121,10 @@ public class OpenBekenCLI {
 
     private void printHelp() {
         System.out.println("\n=== Discovery Commands ===");
-        System.out.println("  scan [subnet] [start] [end]   - Scan subnet for OpenBeken devices via HTTP");
-        System.out.println("  scan -p [--pixelblaze]       - Scan subnet for PixelBlaze LED controllers");
-        System.out.println("  scan [opts] -p               - Scan for both OpenBeken and PixelBlaze");
+        System.out.println("  scan [target]             - Scan for OpenBeken & PixelBlaze (default: whole subnet)");
+        System.out.println("  scan 192.168.86.49        - Scan specific IP");
+        System.out.println("  scan 192.168.86           - Scan whole subnet (1-254)");
+        System.out.println("  scan 192.168.86.1-10     - Scan IP range");
         System.out.println("  inventory [path]              - Load devices.json and probe known IPs");
         System.out.println("  probe <ip>                    - Probe a single IP for OpenBeken");
         System.out.println("  mqtt-discover [broker-url]    - Listen on MQTT broker for devices");
@@ -150,28 +159,43 @@ public class OpenBekenCLI {
     // --- Discovery commands ---
 
     private void cmdScan(String[] parts) {
-        // Check for PixelBlaze scan flag
-        boolean scanPixelblaze = true;
-        int argOffset = 0;
+        // Parse argument: three modes supported
+        // 1. Single IP: scan 192.168.86.49 -> scan single IP
+        // 2. Subnet only: scan 192.168.86 -> scan 1-254
+        // 3. Range: scan 192.168.86.1-10 -> scan 1 to 10
+        String target = (parts.length >= 2 && !parts[1].startsWith("-")) ? parts[1] : subnet;
         
-        // Check for -p or --pixelblaze flag
-        for (int i = 0; i < parts.length; i++) {
-            if (parts[i].equals("-p") || parts[i].equals("--pixelblaze")) {
-                scanPixelblaze = true;
-                argOffset = i + 1;
-                break;
-            }
+        String sub;
+        int start;
+        int end;
+        
+        if (target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+            // Mode 1: Single IP address
+            String[] octets = target.split("\\.");
+            sub = octets[0] + "." + octets[1] + "." + octets[2];
+            start = Integer.parseInt(octets[3]);
+            end = start;
+            System.out.printf("\n→ Scanning single IP %s for OpenBeken & PixelBlaze...\n", target);
+        } else if (target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+-\\d+")) {
+            // Mode 3: Range (e.g., 192.168.86.1-10)
+            String rangePart = target.substring(target.lastIndexOf(".") + 1);
+            sub = target.substring(0, target.lastIndexOf("."));
+            String[] range = rangePart.split("-");
+            start = Integer.parseInt(range[0]);
+            end = Integer.parseInt(range[1]);
+            System.out.printf("\n→ Scanning range %s.%s-%d for OpenBeken & PixelBlaze...\n", sub, start, end);
+        } else {
+            // Mode 2: Subnet only (e.g., 192.168.86)
+            sub = target;
+            start = 1;
+            end = 254;
+            System.out.printf("\n→ Scanning subnet %s.1-254 for OpenBeken & PixelBlaze...\n", sub);
         }
         
-        String sub = parts.length > argOffset ? parts[argOffset] : subnet;
-        int start = parts.length > argOffset + 1 ? Integer.parseInt(parts[argOffset + 1]) : 1;
-        int end = parts.length > argOffset + 2 ? Integer.parseInt(parts[argOffset + 2]) : 254;
-        
-        // Scan for OpenBeken devices first
-        System.out.printf("\n→ Scanning %s.%d-%d for OpenBeken devices...\n", sub, start, end);
+        // Scan for OpenBeken devices
         var listener = new ConsoleDiscoveryListener();
         var found = discoveryService.scanSubnet(sub, start, end, listener);
-        System.out.printf("\n✓ Scan complete. Found %d OpenBeken device(s)\n", found.size());
+        System.out.printf("\n✓ OpenBeken scan complete. Found %d device(s)\n", found.size());
         if (!found.isEmpty()) {
             String home = System.getProperty("user.home");
             String cacheFile = home + "/.mqtt/openbeken-cache.json";
@@ -183,10 +207,8 @@ public class OpenBekenCLI {
             discoveryService.syncToGoogleHomeDevices(googleHomeJson);
         }
         
-        // Optionally scan for PixelBlaze devices
-        if (scanPixelblaze) {
-            cmdScanPixelblaze(sub, start, end);
-        }
+        // Also scan for PixelBlaze devices (always enabled)
+        cmdScanPixelblaze(sub, start, end);
     }
     
     /**
@@ -307,13 +329,17 @@ public class OpenBekenCLI {
         var mqttDevices = mqttService != null ? mqttService.getDiscoveredDevices() : Map.<String, OpenBekenDevice>of();
         Map<String, OpenBekenDevice> all = new HashMap<>(httpDevices);
         all.putAll(mqttDevices);
-        if (all.isEmpty()) {
+        
+        // Load Pixelblaze devices from google-home-devices.json
+        List<GoogleHomeDevice> pixelblazes = loadPixelblazeDevices();
+        
+        if (all.isEmpty() && pixelblazes.isEmpty()) {
             System.out.println("\nNo devices discovered yet.");
             System.out.println("Try: scan, inventory, probe <ip>, or mqtt-discover");
             return;
         }
         
-        // Verify connectivity for devices with IPs
+        // Verify connectivity for OpenBeken devices with IPs
         System.out.println("\n→ Verifying device connectivity...");
         int verified = 0;
         for (OpenBekenDevice d : all.values()) {
@@ -334,25 +360,51 @@ public class OpenBekenCLI {
                 verified++;
             }
         }
-        System.out.printf("  Verified %d device(s)\n", verified);
+        System.out.printf("  Verified %d OpenBeken device(s)\n", verified);
+        
+        // Check Pixelblaze online status
+        int pbVerified = 0;
+        for (GoogleHomeDevice pb : pixelblazes) {
+            if (pb.getIp() != null && !pb.getIp().isEmpty()) {
+                if (isPixelblazeOnline(pb.getIp())) {
+                    pbVerified++;
+                }
+            }
+        }
+        System.out.printf("  Verified %d Pixelblaze device(s)\n", pbVerified);
         
         // Save updated cache with online status
         discoveryService.saveCache();
         
-        System.out.println("\n┌─────────────────────────────────────────────────────────────────────┐");
-        System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-10s │%n",
+        // Display OpenBeken devices
+        System.out.println("\n┌───────────────────────────────────────────────────────────────────────────────────┐");
+        System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-12s │%n",
                 "Device ID", "IP", "Online", "Power", "Method");
-        System.out.println("├─────────────────────────────────────────────────────────────────────┤");
+        System.out.println("├───────────────────────────────────────────────────────────────────────────────────┤");
         for (OpenBekenDevice d : all.values()) {
-            System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-10s │%n",
+            System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-12s │%n",
                     trunc(d.getDeviceId(), 20),
                     trunc(d.getIp() != null ? d.getIp() : "N/A", 16),
                     d.isOnline() ? "✓ Yes" : "✗ No",
                     d.getPowerState() != null ? d.getPowerState() : "?",
-                    trunc(d.getDiscoveryMethod(), 10));
+                    trunc(d.getDiscoveryMethod(), 12));
         }
-        System.out.println("└─────────────────────────────────────────────────────────────────────┘");
-        System.out.printf("Total: %d device(s)\n", all.size());
+        System.out.println("├───────────────────────────────────────────────────────────────────────────────────┤");
+        // Display Pixelblaze devices
+        for (GoogleHomeDevice pb : pixelblazes) {
+            boolean online = pb.getIp() != null && !pb.getIp().isEmpty() && isPixelblazeOnline(pb.getIp());
+            System.out.printf("│ %-20s │ %-16s │ %-8s │ %-8s │ %-12s │%n",
+                    trunc(pb.getId(), 20),
+                    trunc(pb.getIp() != null ? pb.getIp() : "N/A", 16),
+                    online ? "✓ Yes" : "✗ No",
+                    "?",
+                    "Pixelblaze");
+        }
+        System.out.println("└──────────────────────────────────────────────────────────────────────────────────┘");
+        
+        int totalDevices = all.size() + pixelblazes.size();
+        System.out.printf("Total: %d device(s) (%d OpenBeken, %d Pixelblaze)\n", 
+                totalDevices, all.size(), pixelblazes.size());
     }
 
     private void cmdInfo(String[] parts) {
@@ -903,6 +955,47 @@ public class OpenBekenCLI {
         if (colorRotation != null) { colorRotation.stopAll(); }
         if (mqttService != null) { mqttService.disconnect(); }
         if (embeddedBroker != null) { embeddedBroker.stop(); }
+    }
+
+    /**
+     * Load Pixelblaze devices from google-home-devices.json.
+     * Returns list of GoogleHomeDevice objects representing registered Pixelblazes.
+     */
+    private List<GoogleHomeDevice> loadPixelblazeDevices() {
+        String home = System.getProperty("user.home");
+        Path googleHomeJson = Path.of(home, ".mqtt", "google-home-devices.json");
+        
+        if (!Files.exists(googleHomeJson)) {
+            return new ArrayList<>();
+        }
+        
+        try {
+            String json = Files.readString(googleHomeJson);
+            GoogleHomeDevicesConfig config = JsonUtil.fromJson(json, GoogleHomeDevicesConfig.class);
+            if (config != null && config.getPixelblazes() != null) {
+                return config.getPixelblazes();
+            }
+        } catch (Exception e) {
+            System.err.println("Warning: failed to load Pixelblaze devices: " + e.getMessage());
+        }
+        
+        return new ArrayList<>();
+    }
+
+    /**
+     * Check if a Pixelblaze device is online by probing port 81 (WebSocket).
+     * @param ip the IP address to check
+     * @return true if the device responds on port 81
+     */
+    private boolean isPixelblazeOnline(String ip) {
+        try {
+            java.net.Socket socket = new java.net.Socket();
+            socket.connect(new java.net.InetSocketAddress(ip, 81), 2000);
+            socket.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**

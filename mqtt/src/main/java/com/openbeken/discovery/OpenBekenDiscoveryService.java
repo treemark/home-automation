@@ -7,6 +7,7 @@ import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URI;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,6 +17,10 @@ import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import lombok.extern.slf4j.Slf4j;
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
+
 /**
  * Service for discovering OpenBeken devices on the local network.
  * 
@@ -24,6 +29,7 @@ import java.util.regex.Pattern;
  * 2. Inventory — load devices.json and probe each known IP
  * 3. MQTT — subscribe to broker and listen for obk* topic prefixes (handled by MqttDiscoveryService)
  */
+@Slf4j
 public class OpenBekenDiscoveryService {
 
     private static final int HTTP_TIMEOUT_MS = 2000;
@@ -946,16 +952,15 @@ public class OpenBekenDiscoveryService {
     // --- PixelBlaze Discovery ---
     
     /**
-     * Represents a discovered Pixelblaze LED controller.
-     */
-
-    
-    /**
      * Scan a subnet range for Pixelblaze LED controllers.
-     * Pixelblaze devices expose HTTP endpoints like /sendVars, /activateProgram, /config.
-     * Detection uses the /config endpoint returning JSON with "board" = "pixelblaze".
+     * Pixelblaze devices expose WebSocket API on port 81.
+     * Detection uses port 81 as discriminator (OpenBeken never opens port 81).
      */
     public List<PixelblazeDevice> scanSubnetForPixelblaze(String subnetPrefix, int startHost, int endHost) {
+
+        if (startHost == endHost) {
+            return List.of(probePixelblaze(subnetPrefix+"."+startHost));
+        }
         ExecutorService executor = Executors.newFixedThreadPool(SCAN_THREAD_POOL_SIZE);
         List<Future<PixelblazeDevice>> futures = new ArrayList<>();
         
@@ -967,7 +972,7 @@ public class OpenBekenDiscoveryService {
         List<PixelblazeDevice> results = new ArrayList<>();
         for (Future<PixelblazeDevice> future : futures) {
             try {
-                PixelblazeDevice device = future.get(HTTP_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS);
+                PixelblazeDevice device = future.get(HTTP_TIMEOUT_MS + 2000, TimeUnit.MILLISECONDS);
                 if (device != null) {
                     results.add(device);
                 }
@@ -982,122 +987,130 @@ public class OpenBekenDiscoveryService {
     
     /**
      * Probe a single IP address to check if it's a Pixelblaze controller.
-     * Checks for JSON response from /config endpoint containing "board": "pixelblaze".
+     * Uses port 81 as discriminator - OpenBeken never opens port 81.
+     * Uses Jackson (JsonUtil) to parse the JSON response from {"getConfig": true}.
      */
     private PixelblazeDevice probePixelblaze(String ip) {
-        // Quick port check first
+        // Port 80 must be open (web UI present)
         if (!isPortOpen(ip, 80)) {
             return null;
         }
         
+        // Port 81 open = WebSocket = Pixelblaze (not OpenBeken)
+        if (!isPortOpen(ip, 81)) {
+            return null;
+        }
+        
         try {
-            // Try the /config endpoint - Pixelblaze returns JSON config
-            String configResponse = httpGet("http://" + ip + "/config");
-            if (configResponse != null && configResponse.contains("pixelblaze")) {
-                // Parse the name from config - look for "name" field
-                String name = extractJsonValue(configResponse, "name", "deviceName", "hostname");
-                if (name == null || name.isEmpty()) {
-                    name = "Pixelblaze " + ip;
-                }
-                
-                // Try to get the active pattern - check /status or the main page
-                String pattern = "Unknown";
-                try {
-                    String statusResponse = httpGet("http://" + ip + "/status");
-                    if (statusResponse != null) {
-                        pattern = extractJsonValue(statusResponse, "activePattern", "pattern", "currentPattern");
-                        if (pattern == null) {
-                            // Try parsing from HTML
-                            pattern = extractPatternFromHtml(statusResponse);
-                        }
-                    }
-                    if (pattern == null || pattern.isEmpty() || pattern.equals("Unknown")) {
-                        // Try main page
-                        String indexResponse = httpGet("http://" + ip + "/");
-                        pattern = extractPatternFromHtml(indexResponse);
-                    }
-                } catch (Exception e) {
-                    // ignore - default to Unknown
-                }
-                
-                return new PixelblazeDevice(ip, name, pattern);
+            // Send {"getConfig": true} to WebSocket on port 81 and get JSON response
+            String configJson = sendWsAndGetResponse(ip, "{\"getConfig\":true}");
+            if (configJson == null || configJson.isEmpty()) {
+                return null;
             }
             
-            // Fallback: check the main page for Pixelblaze markers
-            String indexResponse = httpGet("http://" + ip + "/");
-            if (indexResponse != null && indexResponse.toLowerCase().contains("pixelblaze")) {
-                // Extract name from page
-                String name = extractNameFromHtml(indexResponse);
-                if (name == null || name.isEmpty()) {
-                    name = "Pixelblaze " + ip;
-                }
-                String pattern = extractPatternFromHtml(indexResponse);
-                return new PixelblazeDevice(ip, name, pattern);
+            // Use Jackson to parse the JSON response
+            Map<String, Object> config = JsonUtil.fromJson(configJson, Map.class);
+            
+            // Extract name - try different possible field names
+            String name = getStringFromJson(config, "name", "deviceName", "hostname", "deviceName");
+            if (name == null || name.isEmpty()) {
+                name = "Pixelblaze " + ip;
             }
+            
+            // Extract active pattern
+
+            String pattern = getStringFromJson(config, "activeProgram");
+            if (pattern == null || pattern.isEmpty()) {
+                pattern = "Unknown";
+            }
+            
+            return new PixelblazeDevice(ip, name, pattern);
             
         } catch (Exception e) {
-            // Not a Pixelblaze device or not reachable
+            System.err.println("[Pixelblaze] Probe error for " + ip + ": " + e.getMessage());
         }
         return null;
     }
     
     /**
-     * Extract device name from Pixelblaze HTML page.
+     * Helper to get a string value from a JSON map, trying multiple possible keys.
      */
-    private String extractNameFromHtml(String html) {
-        if (html == null) return null;
-        
-        // Look for patterns like: <td>Name: </td><td>My LED Strip</td>
-        // or: <input name="name" value="My Strip">
-        Pattern p = Pattern.compile("(?:Name|name)[^:]*:?\\s*</(?:td|th)><(?:td|th)>([^<]+)<", Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(html);
-        if (m.find()) {
-            return m.group(1).trim();
+    private String getStringFromJson(Map<String, Object> json, String... keys) {
+        for (String key : keys) {
+            Object value = json.get(key);
+            if (value != null) {
+                return value.toString();
+            }
         }
-        
-        // Alternative: <input ... value="..." />
-        p = Pattern.compile("name=(?:\"|')[Nn]ame(?:\"|')[^>]*value=(?:\"|')([^\"']+)");
-        m = p.matcher(html);
-        if (m.find()) {
-            return m.group(1).trim();
-        }
-        
         return null;
     }
     
     /**
-     * Extract active pattern name from Pixelblaze HTML/status page.
+     * Send a JSON frame to the Pixelblaze WebSocket and get the response.
      */
-    private String extractPatternFromHtml(String html) {
-        if (html == null) return "Unknown";
-        
-        // Try JSON first - look for "activePattern" or "pattern" field
-        String pattern = extractJsonValue(html, "activePattern", "pattern", "currentPattern", "runningPattern");
-        if (pattern != null && !pattern.isEmpty()) {
-            return pattern;
+    private String sendWsAndGetResponse(String ip, String jsonFrame) {
+        return sendWsWithJavaWebSocket(ip, jsonFrame);
+    }
+    
+    /**
+     * Send WebSocket message using Java-WebSocket library and get response.
+     */
+    private String sendWsWithJavaWebSocket(String ip, String jsonFrame) {
+        try {
+            URI uri = new URI("ws://" + ip + ":81");
+            StringBuilder response = new StringBuilder();
+            CountDownLatch latch = new CountDownLatch(1);
+            
+            WebSocketClient ws = new WebSocketClient(uri) {
+                @Override
+                public void onOpen(ServerHandshake handshake) {
+                    send(jsonFrame);
+                }
+                
+                @Override
+                public void onMessage(String message) {
+                    response.append(message);
+                }
+                
+                @Override
+                public void onClose(int code, String reason, boolean remote) {
+                    latch.countDown();
+                }
+                
+                @Override
+                public void onError(Exception e) {
+                    System.err.println("[Pixelblaze WS] Error: " + e.getMessage());
+                    latch.countDown();
+                }
+            };
+            
+            ws.connect();
+            boolean waited = latch.await(6, TimeUnit.SECONDS);
+            
+            if (response.length() > 0) {
+                ws.close();
+                return response.toString();
+            }
+            
+            ws.close();
+            return null;
+            
+        } catch (Exception e) {
+            System.err.println("[Pixelblaze WS] Failed to get config: " + e.getMessage());
+            return null;
         }
-        
-        // Try HTML parsing - look for dropdown or button showing current pattern
-        // Common pattern: selected>Pattern Name</option>
-        Pattern p = Pattern.compile("selected[^>]*>([^<]+)</(?:option|span)", Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(html);
-        if (m.find()) {
-            return m.group(1).trim();
-        }
-        
-        return "Unknown";
     }
     
     /**
      * Sync discovered Pixelblaze devices to google-home-devices.json.
-     * Adds them to the "pixelblazes" array in the config file.
+     * Uses Jackson (JsonUtil) for JSON serialization/deserialization.
      */
     public void syncPixelblazesToGoogleHome(String googleHomeJsonPath, List<PixelblazeDevice> pixelblazes) 
             throws IOException {
         Path path = Path.of(googleHomeJsonPath);
         GoogleHomeDevicesConfig config;
         
-        // Read existing config
+        // Read existing config using Jackson
         if (Files.exists(path)) {
             String existingJson = Files.readString(path);
             config = JsonUtil.fromJson(existingJson, GoogleHomeDevicesConfig.class);
@@ -1149,7 +1162,7 @@ public class OpenBekenDiscoveryService {
         updatedList.sort(Comparator.comparing(GoogleHomeDevice::getName));
         config.setPixelblazes(updatedList);
         
-        // Write updated config
+        // Write updated config using Jackson
         String updatedJson = JsonUtil.toJson(config);
         Files.writeString(path, updatedJson);
     }

@@ -323,6 +323,8 @@ dependencies {
 
 ## Development Notes
 
+> **⚠️ JSON Parsing**: This project uses Jackson (`com.fasterxml.jackson`) for JSON parsing. Do NOT use regular expressions to parse JSON — it's fragile and error-prone. Use `JsonUtil.fromJson()` and `JsonUtil.toJson()` utility methods provided in `com.openbeken.util.JsonUtil`. Jackson handles proper JSON parsing, escaping, Unicode, and edge cases correctly.
+
 > **⚠️ Large file generation note**: When using AI-assisted code generation tools (e.g., Cline), Java source files in this module should be kept under ~200 lines each. Larger files can exceed output token limits and fail to write. If a class is growing large, break it into smaller files (e.g., separate command handler classes, helper utilities) and use `replace_in_file` for incremental edits rather than full file rewrites.
 
 > **💬 Context Window Management**: AI coding sessions (Cline/Claude) have a finite context window. When the session reaches **~30% context remaining**, prompt the user:
