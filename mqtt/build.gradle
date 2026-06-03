@@ -77,3 +77,27 @@ tasks.register('googleHome', JavaExec) {
     if (ghToken) environment 'GOOGLE_HOME_TOKEN', ghToken
     if (mqttUrl) environment 'MQTT_BROKER_URL',   mqttUrl
 }
+
+// Google Home JAR: ./gradlew :mqtt:googleHomeJar
+// Creates an executable JAR for GoogleHomeMain (alternative to bootJar for CLI)
+tasks.register('googleHomeJar', Jar) {
+    group = 'application'
+    description = 'Creates an executable JAR for Google Home fulfillment server'
+    archiveFileName = 'google-home-app.jar'
+    manifest {
+        attributes(
+            'Main-Class': 'com.openbeken.google.GoogleHomeMain',
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version
+        )
+    }
+    // Include compiled classes from the main source set
+    from sourceSets.main.output
+    // Include all runtime dependencies
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // Exclude duplicate manifest files
+    exclude 'META-INF/MANIFEST.MF'
+}
