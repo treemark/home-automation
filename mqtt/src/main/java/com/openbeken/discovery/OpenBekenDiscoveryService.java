@@ -1014,9 +1014,14 @@ public class OpenBekenDiscoveryService {
             if (pattern == null || pattern.isEmpty()) {
                 pattern = "Unknown";
             }
-            
-            return new PixelblazeDevice(ip, name, pattern);
-            
+
+            // Get full program list so it can be written to google-home-devices.json
+            List<com.openbeken.model.PixelblazeProgram> programs = client.getPrograms();
+
+            PixelblazeDevice device = new PixelblazeDevice(ip, name, pattern);
+            device.programs = programs;
+            return device;
+
         } catch (Exception e) {
             System.err.println("[Pixelblaze] Probe error for " + ip + ": " + e.getMessage());
         }
@@ -1059,15 +1064,20 @@ public class OpenBekenDiscoveryService {
             foundIds.add(pb.id);
             
             if (existingPixelblazes.containsKey(pb.id)) {
-                // Update existing - preserve name/room, update IP
+                // Update existing - preserve name/room, update IP and refresh programs
                 GoogleHomeDevice existing = existingPixelblazes.get(pb.id);
                 if (!pb.ip.equals(existing.getIp())) {
                     existing.setIp(pb.ip);
                 }
+                if (pb.programs != null) {
+                    existing.setPrograms(pb.programs);
+                }
                 updatedList.add(existing);
             } else {
                 // Add new Pixelblaze device
-                updatedList.add(new GoogleHomeDevice(pb.id, pb.name, "Uncategorized", pb.ip, null));
+                GoogleHomeDevice newDevice = new GoogleHomeDevice(pb.id, pb.name, "Uncategorized", pb.ip, null);
+                newDevice.setPrograms(pb.programs);
+                updatedList.add(newDevice);
             }
         }
         

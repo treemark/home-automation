@@ -187,10 +187,11 @@ public class PixelblazeClient {
                         bytes.get(data);
                         payload.append(new String(data, java.nio.charset.StandardCharsets.UTF_8));
 
-                        // End flag set — we have the full list
+                        // End flag set — we have the full list.
+                        // Only countDown; the main thread calls closeBlocking() after
+                        // latch.await() returns, avoiding close()-from-callback deadlock.
                         if ((flags & 0x04) != 0) {
                             latch.countDown();
-                            close();
                         }
                     }
                 }
@@ -324,7 +325,9 @@ public class PixelblazeClient {
                     if (found != null) {
                         result.set(found);
                         latch.countDown();
-                        close(); // done — stop streaming
+                        // Do NOT call close() here — calling close() from within a WebSocket
+                        // callback causes a re-entrancy deadlock in java-websocket. The main
+                        // thread closes the connection after latch.await() returns.
                     }
                 }
 

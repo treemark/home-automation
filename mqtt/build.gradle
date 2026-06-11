@@ -89,6 +89,7 @@ tasks.register('googleHome', JavaExec) {
 
 // Google Home JAR: ./gradlew :mqtt:googleHomeJar
 // Creates an executable JAR for GoogleHomeMain (alternative to bootJar for CLI)
+// Also runs automatically as part of assemble.
 tasks.register('googleHomeJar', Jar) {
     group = 'application'
     description = 'Creates an executable JAR for Google Home fulfillment server'
@@ -110,3 +111,5 @@ tasks.register('googleHomeJar', Jar) {
     // Exclude duplicate manifest files
     exclude 'META-INF/MANIFEST.MF'
 }
+
+assemble.dependsOn('googleHomeJar')
